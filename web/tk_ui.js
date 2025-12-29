@@ -96,8 +96,8 @@ export const ToolkitUI = {
             sidebar.classList.remove('tk-hidden');
             mainPanel.innerHTML = `
                 <div style="height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; color:#52525b; animation: tk-fade-in 0.5s;">
-                    <span style="font-size: 3rem; opacity: 0.2; margin-bottom: 1rem;">✨</span>
-                    <p style="font-weight: 500;">載入中...</p>
+                    <div class="tk-badge-pulse" style="width:12px; height:12px; margin-bottom:1rem;"></div>
+                    <p style="font-weight: 500; font-size: 0.875rem; letter-spacing: 0.05em;">正在加載預設項目...</p>
                 </div>
             `;
             ToolkitApp.loadPresets(tabName, document.getElementById('tk-sidebar-list'), mainPanel);
@@ -122,10 +122,22 @@ export const ToolkitUI = {
         sidebarList.innerHTML = '';
         if (presets.length === 0) {
             sidebarList.innerHTML = '<div style="padding:20px; text-align:center; color:#52525b; font-size: 0.8rem;">找不到相符的項目</div>';
+            mainPanel.innerHTML = `
+                <div style="height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding: 2rem; animation: tk-fade-in 0.5s;">
+                    <span style="font-size: 4rem; margin-bottom: 1.5rem; filter: grayscale(1); opacity: 0.3;">📂</span>
+                    <h3 style="color: var(--tk-zinc-200); font-weight: 700; margin-bottom: 0.5rem;">此分類尚無預設項目</h3>
+                    <p style="color: var(--tk-zinc-500); max-width: 300px; font-size: 0.875rem; line-height: 1.5; margin-bottom: 2rem;">
+                        您需要先前往管理員模式上傳或配置工作流，才能在這裡看到它們。
+                    </p>
+                    <button class="tk-generate-btn" style="min-width: 180px;" onclick="document.querySelector('[data-tab=admin]').click()">
+                        前往管理員模式
+                    </button>
+                </div>
+            `;
             return;
         }
 
-        presets.forEach(p => {
+        presets.forEach((p, index) => {
             const card = document.createElement('div');
             card.className = 'tk-preset-card';
             card.innerHTML = `
@@ -136,12 +148,20 @@ export const ToolkitUI = {
                 </div>
                 <span style="color: #3f3f46; font-size: 0.75rem;">➔</span>
             `;
-            card.onclick = () => {
+
+            const selectPreset = () => {
                 sidebarList.querySelectorAll('.tk-preset-card').forEach(c => c.classList.remove('active'));
                 card.classList.add('active');
                 this.renderUserForm(p, mainPanel);
             };
+
+            card.onclick = selectPreset;
             sidebarList.appendChild(card);
+
+            // Auto-select the first one if it's the first render and not searching
+            if (index === 0) {
+                selectPreset();
+            }
         });
     },
 
