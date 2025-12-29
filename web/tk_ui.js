@@ -7,7 +7,6 @@ export const ToolkitUI = {
         if (this.isOpen) return;
         this.createModal();
         this.isOpen = true;
-        // Default to first tab
         this.switchTab('t2i');
     },
 
@@ -23,25 +22,41 @@ export const ToolkitUI = {
 
         modal.innerHTML = `
             <div class="tk-modal-window">
-                <div class="tk-header">
-                    <div class="tk-tabs">
-                        <button class="tk-tab-btn" data-tab="t2i">文生圖</button>
-                        <button class="tk-tab-btn" data-tab="i2i">圖生圖</button>
-                        <button class="tk-tab-btn" data-tab="edit">圖片編輯</button>
-                        <button class="tk-tab-btn" data-tab="admin" style="color: #ff9800;">管理員</button>
-                    </div>
-                    <button class="tk-close-btn">Close</button>
-                </div>
-                <div class="tk-content">
-                    <!-- Sidebar for selecting presets -->
-                    <div class="tk-sidebar" id="tk-sidebar">
-                        <!-- Presets list will be injected here -->
+                <header class="tk-header">
+                    <div class="tk-logo-area">
+                        <span style="font-size: 1.5rem;">🍌</span>
+                        <span class="tk-logo-text">TK Toolkit Pro</span>
                     </div>
                     
-                    <!-- Main Content Area -->
-                    <div class="tk-main-panel" id="tk-main-panel">
-                        <!-- Dynamic content -->
-                    </div>
+                    <nav class="tk-tabs">
+                        <button class="tk-tab-btn" data-tab="t2i">🖼️ 文生圖</button>
+                        <button class="tk-tab-btn" data-tab="i2i">🎨 圖生圖</button>
+                        <button class="tk-tab-btn" data-tab="edit">🔨 圖片編輯</button>
+                        <button class="tk-tab-btn" data-tab="admin" style="margin-left:8px;">⚙️ 管理員</button>
+                    </nav>
+                    
+                    <button class="tk-close-btn">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    </button>
+                </header>
+
+                <div class="tk-content">
+                    <aside class="tk-sidebar">
+                        <div class="tk-sidebar-search">
+                            <input type="text" id="tk-search-presets" placeholder="搜尋預設工作流...">
+                        </div>
+                        <h3 class="tk-sidebar-label">常用項目</h3>
+                        <div id="tk-sidebar-list" class="tk-sidebar-list">
+                            <!-- Presets list will be injected here -->
+                        </div>
+                    </aside>
+                    
+                    <main class="tk-main-panel" id="tk-main-panel">
+                        <div class="h-full flex flex-col items-center justify-center text-zinc-600">
+                             <span style="font-size: 3rem; opacity: 0.2; margin-bottom: 1rem;">🖼️</span>
+                             <p style="font-weight: 500;">請選擇一個預設項目開始創作</p>
+                        </div>
+                    </main>
                 </div>
             </div>
         `;
@@ -50,10 +65,13 @@ export const ToolkitUI = {
 
         // Event Listeners
         modal.querySelector('.tk-close-btn').onclick = () => this.close();
-
         modal.querySelectorAll('.tk-tab-btn').forEach(btn => {
-            btn.onclick = (e) => this.switchTab(e.target.dataset.tab);
+            btn.onclick = (e) => this.switchTab(e.currentTarget.dataset.tab);
         });
+
+        // Search logic
+        const searchInput = modal.querySelector('#tk-search-presets');
+        searchInput.oninput = (e) => this.filterSidebarList(e.target.value);
 
         // Close on outside click
         modal.onclick = (e) => {
@@ -61,29 +79,49 @@ export const ToolkitUI = {
         };
     },
 
+    currentPresets: [], // Local cache for filtering
+
     switchTab(tabName) {
-        // Update active tab style
         document.querySelectorAll('.tk-tab-btn').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.tab === tabName);
         });
 
-        const sidebar = document.getElementById('tk-sidebar');
+        const sidebar = document.querySelector('.tk-sidebar');
         const mainPanel = document.getElementById('tk-main-panel');
 
         if (tabName === 'admin') {
-            sidebar.style.display = 'none'; // Hide sidebar in admin
+            sidebar.classList.add('tk-hidden');
             ToolkitApp.renderAdminPanel(mainPanel);
         } else {
-            sidebar.style.display = 'flex';
-            ToolkitApp.loadPresets(tabName, sidebar, mainPanel);
+            sidebar.classList.remove('tk-hidden');
+            mainPanel.innerHTML = `
+                <div style="height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; color:#52525b; animation: tk-fade-in 0.5s;">
+                    <span style="font-size: 3rem; opacity: 0.2; margin-bottom: 1rem;">✨</span>
+                    <p style="font-weight: 500;">載入中...</p>
+                </div>
+            `;
+            ToolkitApp.loadPresets(tabName, document.getElementById('tk-sidebar-list'), mainPanel);
         }
     },
 
-    renderPresetList(presets, sidebar, mainPanel, category) {
-        sidebar.innerHTML = '';
+    renderPresetList(presets, sidebarList, mainPanel, category) {
+        this.currentPresets = presets;
+        this.renderFilteredList(presets, sidebarList, mainPanel);
+    },
+
+    filterSidebarList(query) {
+        const filtered = this.currentPresets.filter(p =>
+            p.name.toLowerCase().includes(query.toLowerCase())
+        );
+        const sidebarList = document.getElementById('tk-sidebar-list');
+        const mainPanel = document.getElementById('tk-main-panel');
+        this.renderFilteredList(filtered, sidebarList, mainPanel);
+    },
+
+    renderFilteredList(presets, sidebarList, mainPanel) {
+        sidebarList.innerHTML = '';
         if (presets.length === 0) {
-            sidebar.innerHTML = '<div style="padding:10px; color:#777;">暫無預設</div>';
-            mainPanel.innerHTML = '<div style="display:flex; justify-content:center; align-items:center; height:100%; color:#555;">請選擇一個預設工作流</div>';
+            sidebarList.innerHTML = '<div style="padding:20px; text-align:center; color:#52525b; font-size: 0.8rem;">找不到相符的項目</div>';
             return;
         }
 
@@ -91,46 +129,63 @@ export const ToolkitUI = {
             const card = document.createElement('div');
             card.className = 'tk-preset-card';
             card.innerHTML = `
-                <img src="${p.previewImageUrl || ''}" class="tk-preset-thumb" onerror="this.style.background='#333'">
+                <img src="${p.previewImageUrl || ''}" class="tk-preset-thumb" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2248%22 height=%2248%22><rect width=%2248%22 height=%2248%22 fill=%22%2318181b%22/><text x=%2250%%22 y=%2250%%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 fill=%22%233f3f46%22 font-size=%2220%22>?</text></svg>'">
                 <div class="tk-preset-info">
                     <span class="tk-preset-name">${p.name}</span>
+                    <span class="tk-preset-meta">工作流已就緒</span>
                 </div>
+                <span style="color: #3f3f46; font-size: 0.75rem;">➔</span>
             `;
             card.onclick = () => {
-                // Highlight active
-                sidebar.querySelectorAll('.tk-preset-card').forEach(c => c.classList.remove('active'));
+                sidebarList.querySelectorAll('.tk-preset-card').forEach(c => c.classList.remove('active'));
                 card.classList.add('active');
                 this.renderUserForm(p, mainPanel);
             };
-            sidebar.appendChild(card);
+            sidebarList.appendChild(card);
         });
     },
 
     renderUserForm(preset, container) {
-        // Generate Preview and Form for User
-        const params = preset.parameters.filter(p => p.visible);
+        const visibleParams = preset.parameters.filter(p => p.visible);
 
         container.innerHTML = `
-            <div class="tk-preview-section">
-                <img src="${preset.previewImageUrl}" class="tk-preview-img" onerror="this.style.display='none'">
-            </div>
-            
-            <div class="tk-params-container">
-                ${params.map(p => `
-                    <div class="tk-form-group">
-                        <label class="tk-form-label">${p.displayName}</label>
-                        <input type="text" class="tk-form-input" 
-                            data-node="${p.nodeId}" 
-                            data-input="${p.inputName}" 
-                            value="${p.defaultValue}">
+            <div class="tk-preset-content">
+                <div class="tk-preview-section">
+                    <img src="${preset.previewImageUrl}" class="tk-preview-img" onerror="this.style.opacity='0.2'">
+                    <div class="tk-preview-badge">
+                        <div class="tk-badge-pulse"></div>
+                        <span class="tk-badge-text">目前預設</span>
                     </div>
-                `).join('')}
-            </div>
+                </div>
+                
+                <div class="tk-form-container">
+                    <h4 class="tk-form-title">
+                        <span style="color: var(--tk-emerald-500);">▶</span> 參數設定
+                    </h4>
+                    
+                    <div class="tk-form-grid">
+                        ${visibleParams.map(p => `
+                            <div class="tk-form-group">
+                                <label class="tk-label">${p.displayName}</label>
+                                <input type="text" class="tk-input tk-form-input" 
+                                    data-node="${p.nodeId}" 
+                                    data-input="${p.inputName}" 
+                                    value="${p.defaultValue}">
+                            </div>
+                        `).join('')}
+                    </div>
 
-            <div class="tk-action-bar">
-                <button class="tk-btn tk-btn-primary" id="tk-generate-btn">生成圖片 (Generate)</button>
+                    <div class="tk-action-bar">
+                        <div id="tk-status-container" class="tk-hidden">
+                             <div id="tk-status-msg" class="tk-status-msg"></div>
+                        </div>
+                        <button class="tk-generate-btn" id="tk-generate-btn">
+                             <span style="font-size: 1.2rem;">⚡</span>
+                             生成圖片 (Generate)
+                        </button>
+                    </div>
+                </div>
             </div>
-            <div id="tk-status-msg" style="text-align:right; color:#888; font-size:12px; margin-top:5px;"></div>
         `;
 
         container.querySelector('#tk-generate-btn').onclick = () => {

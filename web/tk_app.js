@@ -4,37 +4,39 @@ import { ToolkitUI } from "./tk_ui.js";
 export const ToolkitApp = {
     // --- USER MODE ---
 
-    async loadPresets(category, sidebar, mainPanel) {
+    async loadPresets(category, sidebarList, mainPanel) {
         try {
             const response = await api.fetchApi('/tk/presets');
             const presets = await response.json();
             const filtered = presets.filter(p => p.category === category);
-            ToolkitUI.renderPresetList(filtered, sidebar, mainPanel, category);
+            ToolkitUI.renderPresetList(filtered, sidebarList, mainPanel, category);
         } catch (e) {
             console.error(e);
-            sidebar.innerHTML = '<div style="color:red">Failed to load presets</div>';
+            sidebarList.innerHTML = '<div style="color:red; padding: 20px;">載入失敗</div>';
         }
     },
 
     async executeWorkflow(preset) {
         const btn = document.getElementById('tk-generate-btn');
-        const status = document.getElementById('tk-status-msg');
+        const statusContainer = document.getElementById('tk-status-container');
+        const statusMsg = document.getElementById('tk-status-msg');
+
         btn.disabled = true;
-        btn.textContent = "Generating...";
-        status.textContent = "Preparing workflow...";
+        btn.innerHTML = '<div class="tk-badge-pulse" style="display:inline-block; margin-right:8px;"></div> Generating...';
+
+        statusContainer.classList.remove('tk-hidden');
+        statusMsg.className = 'tk-status-msg tk-status-emerald';
+        statusMsg.textContent = "🚀 正在準備工作流...";
 
         try {
-            // 1. Deep copy original workflow
             let workflow = JSON.parse(JSON.stringify(preset.workflow));
-
-            // 2. Gather inputs
             const inputs = document.querySelectorAll('.tk-form-input');
+
             inputs.forEach(input => {
                 const nodeId = input.dataset.node;
                 const inputName = input.dataset.input;
                 let value = input.value;
 
-                // Simple type inference
                 if (!isNaN(value) && value.trim() !== '') {
                     if (value.includes('.')) value = parseFloat(value);
                     else value = parseInt(value);
@@ -45,8 +47,7 @@ export const ToolkitApp = {
                 }
             });
 
-            // 3. Send to ComfyUI (Using Raw Fetch to avoid monkeypatches)
-            status.textContent = "Sending to ComfyUI...";
+            statusMsg.textContent = "📡 正在發送到 ComfyUI...";
 
             const p = {
                 prompt: workflow,
@@ -60,98 +61,107 @@ export const ToolkitApp = {
             });
 
             if (response.ok) {
-                status.textContent = "Sent successfully! Check ComfyUI queue.";
+                statusMsg.textContent = "✅ 已成功加入隊列！請查看 ComfyUI。";
                 setTimeout(() => {
                     btn.disabled = false;
-                    btn.textContent = "生成圖片 (Generate)";
-                }, 2000);
+                    btn.innerHTML = '<span style="font-size: 1.2rem;">⚡</span> 生成圖片 (Generate)';
+                    statusContainer.classList.add('tk-hidden');
+                }, 4000);
             } else {
-                throw new Error("API Error: " + response.status + " " + response.statusText);
+                throw new Error("API Error: " + response.status);
             }
 
         } catch (e) {
             console.error(e);
-            status.textContent = "Error: " + e.message;
+            statusMsg.className = 'tk-status-msg tk-status-error';
+            statusMsg.textContent = "❌ 發生錯誤: " + e.message;
             btn.disabled = false;
-            btn.textContent = "Error (Retry)";
+            btn.innerHTML = '重試 (Retry)';
         }
     },
 
     // --- ADMIN MODE ---
 
-    // Config State
-    editingPresetId: null, // If editing existing
-    currentWorkflow: null, // Temp store for uploaded json
+    editingPresetId: null,
+    currentWorkflow: null,
 
     renderAdminPanel(container) {
         container.innerHTML = `
-            <div class="tk-admin-panel">
-                <h2>Admin Configuration</h2>
-                
-                <!-- Manage Existing -->
-                <div style="background:#252525; padding:15px; border-radius:8px; margin-bottom:20px; border:1px solid #333;">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                        <h3 style="margin:0;">Manage Existing Presets</h3>
-                        <button class="tk-btn tk-btn-secondary" onclick="this.closest('.tk-admin-panel').querySelector('#tk-admin-preset-list').classList.toggle('tk-hidden')">Toggle List</button>
+            <div class="tk-admin-panel animate-in fade-in duration-300">
+                <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom: 2rem;">
+                    <div>
+                        <h2 class="tk-admin-title" style="margin:0;">工作流管理員</h2>
+                        <p style="font-size: 0.875rem; color: var(--tk-zinc-500);">配置預設工作流、參數可見性與默認值。</p>
                     </div>
-                    <div id="tk-admin-preset-list" style="max-height: 200px; overflow-y: auto; display:flex; flex-direction:column; gap:5px;">
-                        Loading...
-                    </div>
+                    <button class="tk-generate-btn" id="tk-trigger-upload" style="min-width: unset; padding: 0.6rem 1.2rem; background: rgba(16, 185, 129, 0.1); color: var(--tk-emerald-400); border: 1px solid rgba(16, 185, 129, 0.3);">
+                        📤 上傳 JSON
+                    </button>
+                    <input type="file" id="tk-upload-json" accept=".json" style="display:none;">
                 </div>
 
-                <!-- Create New -->
-                <div style="background:#2d2d2d; padding:15px; border-radius:8px; margin-bottom:20px;">
-                    <h3>Upload New Workflow API JSON</h3>
-                    <input type="file" id="tk-upload-json" accept=".json" style="margin-bottom:10px;">
-                    <p style="color:#888; font-size:12px;">Ensure you uploaded a valid "API Format" JSON from ComfyUI (Dev Mode).</p>
-                </div>
-
-                <!-- Config Area -->
-                <div id="tk-config-area" class="tk-hidden">
-                    <h3 id="tk-config-title" style="color:#4CAF50;">Configure Preset</h3>
-                    
-                    <div class="tk-form-group">
-                        <label class="tk-form-label">Display Name</label>
-                        <input type="text" id="tk-config-name" class="tk-form-input" placeholder="e.g. Dreamy Portrait">
-                    </div>
-                    
-                    <div class="tk-form-group" style="margin-top:10px;">
-                        <label class="tk-form-label">Category</label>
-                        <select id="tk-config-category" class="tk-form-input">
-                            <option value="t2i">文生圖 (Text to Image)</option>
-                            <option value="i2i">圖生圖 (Image to Image)</option>
-                            <option value="edit">圖片編輯 (Image Edit)</option>
-                        </select>
-                    </div>
-                    
-                    <div class="tk-form-group" style="margin-top:10px;">
-                        <label class="tk-form-label">Preview Image</label>
-                        <div style="display:flex; gap:10px;">
-                            <input type="text" id="tk-config-image" class="tk-form-input" placeholder="Image URL (or upload below)" style="flex:1;">
-                            <input type="file" id="tk-upload-img-input" accept="image/*" style="display:none;">
-                            <button class="tk-btn tk-btn-secondary" onclick="document.getElementById('tk-upload-img-input').click()">Upload</button>
+                <div style="display:grid; grid-template-columns: 320px 1fr; gap: 2rem;">
+                    <!-- Left Pane: Manage -->
+                    <div class="tk-admin-section">
+                        <h3 class="tk-sidebar-label">已保存預設</h3>
+                        <div id="tk-admin-preset-list" style="display:flex; flex-direction:column; gap:8px;">
+                            Loading...
                         </div>
                     </div>
 
-                    <h3 style="margin-top:20px;">Parameter Visibility & Defaults</h3>
-                    <div id="tk-node-list"></div>
+                    <!-- Right Pane: Config -->
+                    <div id="tk-config-area" class="tk-admin-section tk-hidden">
+                        <div style="display:flex; align-items:center; gap:0.5rem; color: var(--tk-emerald-400); margin-bottom:1.5rem;">
+                            <span style="font-size: 1.25rem;">⚙️</span>
+                            <h3 id="tk-config-title" style="font-weight:700; margin:0;">配置預設</h3>
+                        </div>
 
-                    <div style="display:flex; gap:10px; margin-top:20px;">
-                        <button class="tk-btn tk-btn-primary" id="tk-save-preset" style="flex:1;">Save Preset</button>
-                        <button class="tk-btn tk-btn-secondary" id="tk-cancel-edit" style="width:100px;">Cancel</button>
+                        <div class="tk-form-grid" style="margin-bottom: 2rem;">
+                            <div class="tk-form-group">
+                                <label class="tk-label">顯示名稱</label>
+                                <input type="text" id="tk-config-name" class="tk-input" placeholder="例如：夢幻人像 V2">
+                            </div>
+                            <div class="tk-form-group">
+                                <label class="tk-label">分類</label>
+                                <select id="tk-config-category" class="tk-input">
+                                    <option value="t2i">文生圖 (T2I)</option>
+                                    <option value="i2i">圖生圖 (I2I)</option>
+                                    <option value="edit">圖片編輯 (Edit)</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="tk-form-group" style="margin-bottom: 2rem;">
+                            <label class="tk-label">預覽圖片</label>
+                            <div style="display:flex; gap:0.5rem;">
+                                <input type="text" id="tk-config-image" class="tk-input" placeholder="圖片連結或上傳" style="flex:1;">
+                                <button class="tk-tab-btn" onclick="document.getElementById('tk-upload-img-input').click()" style="background: var(--tk-zinc-800);">上傳檔案</button>
+                            </div>
+                            <input type="file" id="tk-upload-img-input" accept="image/*" style="display:none;">
+                        </div>
+
+                        <h4 class="tk-sidebar-label" style="margin-top: 2rem;">節點與參數配置</h4>
+                        <div id="tk-node-list" style="display:flex; flex-direction:column; gap: 1rem;"></div>
+
+                        <div style="display:flex; justify-content:flex-end; gap:1rem; margin-top:2.5rem; pt: 1.5rem; border-top: 1px solid var(--tk-border);">
+                            <button id="tk-cancel-edit" class="tk-tab-btn">取消</button>
+                            <button id="tk-save-preset" class="tk-generate-btn" style="min-width: 140px;">保存預設</button>
+                        </div>
                     </div>
                 </div>
             </div>
         `;
 
-        // Bind Events
-        container.querySelector('#tk-upload-json').onchange = (e) => this.handleJsonUpload(e.target.files[0]);
+        // Bind Actions
+        const fileInput = container.querySelector('#tk-upload-json');
+        container.querySelector('#tk-trigger-upload').onclick = () => fileInput.click();
+        fileInput.onchange = (e) => this.handleJsonUpload(e.target.files[0]);
+
         container.querySelector('#tk-save-preset').onclick = () => this.savePreset();
         container.querySelector('#tk-cancel-edit').onclick = () => {
             document.getElementById('tk-config-area').classList.add('tk-hidden');
             this.editingPresetId = null;
             this.currentWorkflow = null;
-            document.getElementById('tk-upload-json').value = '';
+            fileInput.value = '';
         };
 
         // Image Upload
@@ -161,22 +171,14 @@ export const ToolkitApp = {
             const formData = new FormData();
             formData.append('image', file);
             try {
-                const res = await api.fetchApi('/tk/upload_image', {
-                    method: 'POST',
-                    body: formData
-                });
+                const res = await api.fetchApi('/tk/upload_image', { method: 'POST', body: formData });
                 const data = await res.json();
                 if (data.status === 'success') {
                     document.getElementById('tk-config-image').value = data.url;
-                } else {
-                    alert('Image upload failed: ' + data.message);
-                }
-            } catch (err) {
-                alert('Upload error: ' + err.message);
-            }
+                } else alert('上傳失敗: ' + data.message);
+            } catch (err) { alert('上傳錯誤: ' + err.message); }
         };
 
-        // Load List
         this.loadAdminPresetList();
     },
 
@@ -189,37 +191,42 @@ export const ToolkitApp = {
             const presets = await response.json();
 
             listContainer.innerHTML = '';
-            if (presets.length === 0) listContainer.innerHTML = '<div style="color:#777;">No presets found.</div>';
+            if (presets.length === 0) listContainer.innerHTML = '<div style="color:var(--tk-zinc-600); font-size: 0.875rem; text-align:center; padding: 2rem;">尚無預設項目</div>';
 
             presets.forEach(p => {
                 const item = document.createElement('div');
-                item.style.cssText = "display:flex; justify-content:space-between; align-items:center; background:#111; padding:8px; border-radius:4px;";
+                item.style.cssText = "display:flex; align-items:center; gap:0.75rem; background:rgba(39,39,42,0.4); padding:0.75rem; border-radius:12px; border:1px solid var(--tk-border); transition: all 0.2s; position: relative; overflow: hidden;";
                 item.innerHTML = `
-                    <span>[${p.category}] <b>${p.name}</b></span>
-                    <div style="display:flex; gap:5px;">
-                        <button class="tk-btn-edit tk-btn-secondary" style="font-size:12px; padding:4px 8px;">Edit</button>
-                        <button class="tk-btn-del" style="background:#c62828; color:white; border:none; border-radius:3px; cursor:pointer; padding:4px 8px;">Delete</button>
+                    <div style="width:40px; height:40px; border-radius:8px; background:var(--tk-zinc-900); overflow:hidden; border:1px solid var(--tk-border);">
+                        <img src="${p.previewImageUrl}" style="width:100%; height:100%; object-fit:cover; opacity: 0.8;">
+                    </div>
+                    <div style="flex:1; min-width:0;">
+                         <div style="font-size:0.875rem; font-weight:600; color:var(--tk-zinc-200); text-overflow:ellipsis; overflow:hidden; white-space:nowrap;">${p.name}</div>
+                         <div style="font-size:0.65rem; color:var(--tk-zinc-500); text-transform:uppercase;">${p.category}</div>
+                    </div>
+                    <div style="display:flex; gap:6px;">
+                         <button class="tk-edit-mini" style="background:var(--tk-emerald-500); border:none; color:#000; padding:6px 12px; border-radius:8px; cursor:pointer; font-size:11px; font-weight:700; transition:all 0.2s;">🔏 編輯</button>
+                         <button class="tk-del-mini" style="background:rgba(239,68,68,0.2); border:1px solid rgba(239,68,68,0.3); color:#f87171; padding:6px 12px; border-radius:8px; cursor:pointer; font-size:11px; font-weight:600; transition:all 0.2s;">🗑️ 刪除</button>
                     </div>
                 `;
 
-                // Edit
-                item.querySelector('.tk-btn-edit').onclick = () => this.loadPresetForEditing(p);
+                item.querySelector('.tk-edit-mini').onmouseover = (e) => e.target.style.transform = 'scale(1.05)';
+                item.querySelector('.tk-edit-mini').onmouseout = (e) => e.target.style.transform = 'scale(1)';
+                item.querySelector('.tk-del-mini').onmouseover = (e) => e.target.style.background = 'rgba(239,68,68,0.3)';
+                item.querySelector('.tk-del-mini').onmouseout = (e) => e.target.style.background = 'rgba(239,68,68,0.2)';
 
-                // Delete
-                item.querySelector('.tk-btn-del').onclick = async () => {
-                    if (confirm(`Delete preset "${p.name}"?`)) {
-                        await api.fetchApi('/tk/delete_preset', {
-                            method: 'POST',
-                            body: JSON.stringify({ id: p.id })
-                        });
-                        this.loadAdminPresetList(); // Refresh
+                item.querySelector('.tk-edit-mini').onclick = () => this.loadPresetForEditing(p);
+                item.querySelector('.tk-del-mini').onclick = async () => {
+                    if (confirm(`確定要刪除 "${p.name}" 嗎？`)) {
+                        await api.fetchApi('/tk/delete_preset', { method: 'POST', body: JSON.stringify({ id: p.id }) });
+                        this.loadAdminPresetList();
                     }
                 };
 
                 listContainer.appendChild(item);
             });
         } catch (e) {
-            listContainer.innerHTML = `<div style="color:red">Error loading list: ${e.message}</div>`;
+            listContainer.innerHTML = `<div style="color:red; font-size:0.75rem;">載入失敗: ${e.message}</div>`;
         }
     },
 
@@ -227,34 +234,30 @@ export const ToolkitApp = {
         this.editingPresetId = preset.id;
         this.currentWorkflow = preset.workflow;
 
-        // Show Config Area
         this.parseAndShowConfig(preset.workflow);
 
-        // Fill Values
         document.getElementById('tk-config-name').value = preset.name;
         document.getElementById('tk-config-category').value = preset.category;
         document.getElementById('tk-config-image').value = preset.previewImageUrl;
-        document.getElementById('tk-config-title').textContent = "Editing Preset: " + preset.name;
+        document.getElementById('tk-config-title').textContent = "編輯預設項目";
 
-        // Fill Params
         preset.parameters.forEach(p => {
             const checkbox = document.querySelector(`.tk-param-visible[data-node="${p.nodeId}"][data-key="${p.inputName}"]`);
             if (checkbox) {
                 checkbox.checked = p.visible;
-                const row = checkbox.closest('.tk-node-param');
-                row.querySelector('.tk-param-name').value = p.displayName;
-                row.querySelector('.tk-param-default').value = p.defaultValue;
+                const row = checkbox.closest('.tk-node-param-admin');
+                row.querySelector('.tk-param-name-admin').value = p.displayName;
+                row.querySelector('.tk-param-default-admin').value = p.defaultValue;
             }
         });
 
-        // Scroll to edit
         document.getElementById('tk-config-area').scrollIntoView({ behavior: 'smooth' });
     },
 
     handleJsonUpload(file) {
         if (!file) return;
-        this.editingPresetId = null; // Reset ID for new upload
-        document.getElementById('tk-config-title').textContent = "Configure New Preset";
+        this.editingPresetId = null;
+        document.getElementById('tk-config-title').textContent = "新建預設項目";
 
         const reader = new FileReader();
         reader.onload = (e) => {
@@ -262,12 +265,9 @@ export const ToolkitApp = {
                 const json = JSON.parse(e.target.result);
                 this.currentWorkflow = json;
                 this.parseAndShowConfig(json);
-                // Clear inputs
                 document.getElementById('tk-config-name').value = '';
                 document.getElementById('tk-config-image').value = '';
-            } catch (err) {
-                alert("Invalid JSON file");
-            }
+            } catch (err) { alert("無效的 JSON 檔案"); }
         };
         reader.readAsText(file);
     },
@@ -278,32 +278,38 @@ export const ToolkitApp = {
         configArea.classList.remove('tk-hidden');
         nodeList.innerHTML = '';
 
-        // Iterate Nodes
         for (const [nodeId, nodeData] of Object.entries(workflow)) {
             if (!nodeData.inputs) continue;
 
             const nodeDiv = document.createElement('div');
-            nodeDiv.className = 'tk-node-group';
-            nodeDiv.innerHTML = `<div class="tk-node-header">[${nodeId}] ${nodeData.class_type}</div>`;
+            nodeDiv.style.cssText = "background:rgba(9,9,11,0.2); border:1px solid var(--tk-border); border-radius:16px; overflow:hidden;";
 
+            nodeDiv.innerHTML = `
+                <div style="background:rgba(63,63,70,0.2); padding:0.5rem 1rem; font-size:10px; font-weight:800; color:var(--tk-zinc-500); display:flex; justify-content:space-between; text-transform:uppercase; letter-spacing:0.05em;">
+                    <span>NODE ID: ${nodeId}</span>
+                    <span style="color:var(--tk-emerald-500); opacity:0.6;">${nodeData.class_type}</span>
+                </div>
+                <div class="tk-node-params-body" style="padding:1rem; display:flex; flex-direction:column; gap:0.75rem;"></div>
+            `;
+
+            const paramsBody = nodeDiv.querySelector('.tk-node-params-body');
             let hasInputs = false;
+
             for (const [key, val] of Object.entries(nodeData.inputs)) {
-                // Skip non-primitive inputs (links are arrays in Comfy API format)
-                if (Array.isArray(val)) continue; // Connection link
+                if (Array.isArray(val)) continue;
 
                 hasInputs = true;
                 const paramDiv = document.createElement('div');
-                paramDiv.className = 'tk-node-param';
+                paramDiv.className = 'tk-node-param-admin';
+                paramDiv.style.cssText = "display:flex; align-items:center; gap:1rem;";
 
                 paramDiv.innerHTML = `
-                    <div style="width:150px; overflow:hidden; text-overflow:ellipsis;">${key}</div>
-                    <div class="tk-param-config">
-                        <label><input type="checkbox" class="tk-param-visible" data-node="${nodeId}" data-key="${key}"> Visible</label>
-                        <input type="text" class="tk-admin-input tk-param-name" placeholder="Display Name" value="${key}">
-                        <input type="text" class="tk-admin-input tk-param-default" placeholder="Default Value" value="${val}">
-                    </div>
+                    <input type="checkbox" class="tk-param-visible" data-node="${nodeId}" data-key="${key}" style="accent-color: var(--tk-emerald-500);">
+                    <span style="font-size:0.875rem; color:var(--tk-zinc-300); width:120px; overflow:hidden; text-overflow:ellipsis;">${key}</span>
+                    <input type="text" class="tk-input tk-param-name-admin" placeholder="顯示名稱" value="${key}" style="padding:0.4rem 0.8rem; flex:1; font-size:0.75rem;">
+                    <input type="text" class="tk-input tk-param-default-admin" placeholder="默認值" value="${val}" style="padding:0.4rem 0.8rem; width:120px; font-size:0.75rem;">
                 `;
-                nodeDiv.appendChild(paramDiv);
+                paramsBody.appendChild(paramDiv);
             }
 
             if (hasInputs) nodeList.appendChild(nodeDiv);
@@ -315,19 +321,17 @@ export const ToolkitApp = {
         const category = document.getElementById('tk-config-category').value;
         const image = document.getElementById('tk-config-image').value;
 
-        if (!name) { alert("Please enter a name"); return; }
-        if (!this.currentWorkflow) { alert("No workflow loaded"); return; }
+        if (!name) { alert("請輸入名稱"); return; }
+        if (!this.currentWorkflow) { alert("未載入工作流"); return; }
 
-        // Gather Parameters
         const parameters = [];
         document.querySelectorAll('.tk-param-visible:checked').forEach(checkbox => {
-            const row = checkbox.closest('.tk-node-param');
+            const row = checkbox.closest('.tk-node-param-admin');
             const nodeId = checkbox.dataset.node;
             const inputName = checkbox.dataset.key;
-            const displayName = row.querySelector('.tk-param-name').value;
-            let defaultValue = row.querySelector('.tk-param-default').value;
+            const displayName = row.querySelector('.tk-param-name-admin').value;
+            let defaultValue = row.querySelector('.tk-param-default-admin').value;
 
-            // Try to parse default value to original type if number
             if (!isNaN(defaultValue) && defaultValue.trim() !== '') {
                 if (defaultValue.includes('.')) defaultValue = parseFloat(defaultValue);
                 else defaultValue = parseInt(defaultValue);
@@ -335,7 +339,7 @@ export const ToolkitApp = {
 
             parameters.push({
                 nodeId,
-                nodeTitle: "Node " + nodeId, // Simplified
+                nodeTitle: "Node " + nodeId,
                 inputName,
                 visible: true,
                 displayName: displayName || inputName,
@@ -344,7 +348,7 @@ export const ToolkitApp = {
         });
 
         const presetData = {
-            id: this.editingPresetId || crypto.randomUUID(), // Use existing ID if editing
+            id: this.editingPresetId || crypto.randomUUID(),
             name,
             category,
             previewImageUrl: image,
@@ -352,24 +356,13 @@ export const ToolkitApp = {
             parameters
         };
 
-        const res = await api.fetchApi('/tk/save_preset', {
-            method: 'POST',
-            body: JSON.stringify(presetData)
-        });
-
+        const res = await api.fetchApi('/tk/save_preset', { method: 'POST', body: JSON.stringify(presetData) });
         if (res.ok) {
-            alert("Preset Saved Successfully!");
-
-            // Cleanup UI
+            alert("保存成功！");
             document.getElementById('tk-config-area').classList.add('tk-hidden');
             this.editingPresetId = null;
             this.currentWorkflow = null;
-            document.getElementById('tk-upload-json').value = '';
-
-            // Refresh list
             this.loadAdminPresetList();
-        } else {
-            alert("Failed to save preset");
-        }
+        } else alert("保存失敗");
     }
 };
