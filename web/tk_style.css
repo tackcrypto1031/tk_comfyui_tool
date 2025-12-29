@@ -1,0 +1,304 @@
+/* Floating Button */
+.tk-floating-btn {
+    position: fixed;
+    right: 20px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 50px;
+    height: 50px;
+    background: #4CAF50;
+    color: white;
+    border-radius: 50%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 24px;
+    cursor: pointer;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
+    z-index: 9999;
+    transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    user-select: none;
+}
+
+.tk-floating-btn:hover {
+    transform: translateY(-50%) scale(1.1);
+    background: #45a049;
+    box-shadow: 0 6px 14px rgba(0, 0, 0, 0.6);
+}
+
+.tk-floating-btn:active {
+    transform: translateY(-50%) scale(0.95);
+}
+
+/* Main Modal Styling */
+.tk-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.8);
+    z-index: 1000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-family: sans-serif;
+    color: #e0e0e0;
+}
+
+.tk-modal-window {
+    width: 90%;
+    height: 90%;
+    background: #1e1e1e;
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+    overflow: hidden;
+}
+
+/* Header & Tabs */
+.tk-header {
+    background: #2d2d2d;
+    padding: 10px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #3d3d3d;
+}
+
+.tk-tabs {
+    display: flex;
+    gap: 5px;
+}
+
+.tk-tab-btn {
+    background: transparent;
+    border: none;
+    color: #aaa;
+    padding: 10px 20px;
+    cursor: pointer;
+    font-size: 16px;
+    border-bottom: 2px solid transparent;
+    transition: all 0.2s;
+}
+
+.tk-tab-btn:hover {
+    color: #fff;
+    background: #333;
+}
+
+.tk-tab-btn.active {
+    color: #4CAF50;
+    border-bottom: 2px solid #4CAF50;
+}
+
+.tk-close-btn {
+    background: transparent;
+    border: 1px solid #555;
+    color: #aaa;
+    padding: 5px 10px;
+    cursor: pointer;
+    border-radius: 4px;
+}
+
+.tk-close-btn:hover {
+    background: #c62828;
+    color: white;
+    border-color: #c62828;
+}
+
+/* Content Area */
+.tk-content {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+}
+
+/* Sidebar (Preset List) */
+.tk-sidebar {
+    width: 250px;
+    background: #252525;
+    border-right: 1px solid #3d3d3d;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+}
+
+.tk-preset-card {
+    padding: 10px;
+    cursor: pointer;
+    border-bottom: 1px solid #333;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    transition: background 0.2s;
+}
+
+.tk-preset-card:hover {
+    background: #333;
+}
+
+.tk-preset-card.active {
+    background: #2e3b2f;
+    border-left: 3px solid #4CAF50;
+}
+
+.tk-preset-thumb {
+    width: 60px;
+    height: 60px;
+    object-fit: cover;
+    background: #000;
+    border-radius: 4px;
+}
+
+.tk-preset-info {
+    display: flex;
+    flex-direction: column;
+}
+
+.tk-preset-name {
+    font-weight: bold;
+    font-size: 14px;
+    color: #ddd;
+}
+
+/* Main Panel (Workflow & Params) */
+.tk-main-panel {
+    flex: 1;
+    padding: 20px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.tk-preview-section {
+    width: 100%;
+    height: 300px;
+    background: #111;
+    border-radius: 8px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    overflow: hidden;
+    border: 1px solid #3d3d3d;
+}
+
+.tk-preview-img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+}
+
+.tk-params-container {
+    background: #2d2d2d;
+    padding: 20px;
+    border-radius: 8px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 15px;
+}
+
+.tk-form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.tk-form-label {
+    font-size: 13px;
+    color: #bbb;
+}
+
+.tk-form-input {
+    background: #1a1a1a;
+    border: 1px solid #444;
+    color: white;
+    padding: 8px;
+    border-radius: 4px;
+}
+
+.tk-form-input:focus {
+    border-color: #4CAF50;
+    outline: none;
+}
+
+/* Action Bar */
+.tk-action-bar {
+    padding: 20px;
+    border-top: 1px solid #3d3d3d;
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+.tk-btn {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+.tk-btn-primary {
+    background: #4CAF50;
+    color: white;
+}
+
+.tk-btn-primary:hover {
+    background: #45a049;
+}
+
+.tk-btn-secondary {
+    background: #555;
+    color: white;
+}
+
+/* Admin Styles */
+.tk-admin-panel {
+    padding: 20px;
+    overflow-y: auto;
+    width: 100%;
+}
+
+.tk-node-group {
+    border: 1px solid #444;
+    margin-bottom: 20px;
+    border-radius: 6px;
+    background: #252525;
+}
+
+.tk-node-header {
+    padding: 10px;
+    background: #333;
+    font-weight: bold;
+    border-bottom: 1px solid #444;
+}
+
+.tk-node-param {
+    padding: 10px;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    border-bottom: 1px solid #333;
+}
+
+.tk-param-config {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+}
+
+.tk-admin-input {
+    background: #111;
+    border: 1px solid #555;
+    color: #eee;
+    padding: 5px;
+    border-radius: 3px;
+}
+
+.tk-hidden {
+    display: none !important;
+}
