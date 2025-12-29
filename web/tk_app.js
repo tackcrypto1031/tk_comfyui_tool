@@ -11,6 +11,9 @@ export const ToolkitApp = {
         if (this.isListening) return;
         this.isListening = true;
 
+        // Expose to window for inline HTML events
+        window.ToolkitApp = this;
+
         api.addEventListener('progress', (e) => this.onProgress(e));
         api.addEventListener('status', (e) => this.onStatus(e));
         api.addEventListener('executed', (e) => this.onExecuted(e));
@@ -140,7 +143,7 @@ export const ToolkitApp = {
                             prompt_id: resData.prompt_id,
                             preset_name: preset.name,
                             timestamp: Date.now(),
-                            workflow: preset.workflow,
+                            workflow: workflow, // Save the Modified workflow with user inputs
                             status: 'queued'
                         })
                     });
@@ -226,14 +229,52 @@ export const ToolkitApp = {
             items.forEach(item => {
                 const card = document.createElement('div');
                 card.className = 'tk-gallery-item';
+                // Add relative positioning for button placement
+                card.style.position = 'relative';
 
                 const date = new Date(item.timestamp).toLocaleString();
+
+                // Changed click handler to openImageModal
                 const imgHtml = item.image_url
-                    ? `<img src="${item.image_url}" class="tk-gallery-img" onclick="window.open('${item.image_url}', '_blank')">`
+                    ? `<img src="${item.image_url}" class="tk-gallery-img" style="cursor:pointer;" onclick="ToolkitApp.openImageModal('${item.image_url}')">`
                     : `<div class="tk-gallery-img" style="display:flex;align-items:center;justify-content:center;color:var(--tk-zinc-600);font-size:2rem;">⏳</div>`;
+
+                // Add "Make Same Style" button (Yellow button at bottom right)
+                // Using inline styles to match the request quickly
+                const makeSameStyleBtn = item.image_url ? `
+                    <button class="tk-make-same-style-btn" 
+                            title="做同款 (Make Same Style)"
+                            onclick="ToolkitApp.loadHistorySettings('${item.id}')"
+                            style="
+                                position: absolute;
+                                bottom: 44px; 
+                                right: 8px;
+                                width: 32px;
+                                height: 32px;
+                                border-radius: 50%;
+                                background: var(--tk-amber-500, #f59e0b);
+                                border: 2px solid #18181b;
+                                color: #000;
+                                display: flex;
+                                align-items: center;
+                                justify-content: center;
+                                cursor: pointer;
+                                box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5);
+                                transition: transform 0.1s;
+                                z-index: 10;
+                            "
+                            onmouseover="this.style.transform='scale(1.1)'"
+                            onmouseout="this.style.transform='scale(1)'"
+                    >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+                        </svg>
+                    </button>
+                ` : '';
 
                 card.innerHTML = `
                     ${imgHtml}
+                    ${makeSameStyleBtn}
                     <div class="tk-gallery-meta">
                         <span class="tk-gallery-tag">${item.preset_name || 'Unknown'}</span>
                         <div style="color:var(--tk-zinc-500); font-size:0.65rem;">${date}</div>
@@ -537,5 +578,212 @@ export const ToolkitApp = {
             this.currentWorkflow = null;
             this.loadAdminPresetList();
         } else alert("保存失敗");
+    },
+
+    async loadHistorySettings(historyId) {
+        try {
+            // 1. Ensure presets are loaded
+            if (!this.presetsCache) {
+                const response = await api.fetchApi('/tk/presets');
+                this.presetsCache = await response.json();
+            }
+
+            // 2. Fetch history item details
+            const hRes = await api.fetchApi('/tk/history');
+            const history = await hRes.json();
+            const item = history.find(h => h.id === historyId);
+
+            if (!item) throw new Error("找不到該歷史記錄");
+
+            // 3. Find corresponding preset
+            const preset = this.presetsCache.find(p => p.name === item.preset_name);
+            if (!preset) throw new Error(`找不到原預設項目 "${item.preset_name}" (可能已被刪除)`);
+
+            // 4. Fetch actual workflow from ComfyUI history to get the real inputs used
+            let sourceWorkflow = item.workflow;
+            try {
+                if (item.prompt_id) {
+                    const cRes = await api.fetchApi('/history/' + item.prompt_id);
+                    if (cRes.ok) {
+                        const cData = await cRes.json();
+                        const cHistory = cData[item.prompt_id];
+                        // ComfyUI history stores the graph in 'prompt' (array-like object) or 'extra_data' depending on version/context
+                        // Typically it is in cHistory.prompt which has the structure { node_id: { inputs: ... } }
+                        // Note: ComfyUI history output is strictly the "prompt" structure sent to API.
+                        if (cHistory && cHistory.prompt) {
+                            // ComfyUI history might return the prompt as an array: [number, uuid, {node_graph}, {client_info}, [outputs]]
+                            if (Array.isArray(cHistory.prompt) && cHistory.prompt.length > 2) {
+                                sourceWorkflow = cHistory.prompt[2];
+                            } else {
+                                sourceWorkflow = cHistory.prompt;
+                            }
+                        }
+                    }
+                }
+            } catch (err) {
+                console.warn("Failed to fetch ComfyUI history, falling back to stored workflow", err);
+            }
+
+            // 5. Switch Tab and Render
+            ToolkitUI.switchTab(preset.category);
+
+            // Wait for DOM
+            setTimeout(() => {
+                const mainPanel = document.getElementById('tk-main-panel');
+                ToolkitUI.renderUserForm(preset, mainPanel);
+
+                // Highlight in sidebar
+                const sidebarList = document.getElementById('tk-sidebar-list');
+                if (sidebarList) {
+                    const cards = sidebarList.querySelectorAll('.tk-preset-card');
+                    cards.forEach(c => {
+                        if (c.querySelector('.tk-preset-name').textContent === preset.name) {
+                            c.classList.add('active');
+                            c.scrollIntoView({ block: 'center' });
+                        } else {
+                            c.classList.remove('active');
+                        }
+                    });
+                }
+
+                // 6. Populate Values from Source Workflow
+                let matchCount = 0;
+                // sourceWorkflow is { nodeId: { inputs: { ... } } }
+
+                // Debug logging
+                console.log("Restoring from workflow:", sourceWorkflow);
+
+                preset.parameters.forEach(param => {
+                    // sourceWorkflow uses string keys for node IDs
+                    const node = sourceWorkflow[param.nodeId] || sourceWorkflow[parseInt(param.nodeId)];
+
+                    if (node && node.inputs) {
+                        const val = node.inputs[param.inputName];
+                        if (val !== undefined) {
+                            const inputElem = document.querySelector(`.tk-form-input[data-node="${param.nodeId}"][data-input="${param.inputName}"]`);
+                            if (inputElem) {
+                                inputElem.value = val;
+                                matchCount++;
+                            }
+                        }
+                    }
+                });
+
+                this.showToast(`已套用同款參數 (${matchCount})`, 'success');
+            }, 200); // Increased timeout to 200ms just to be safe
+
+        } catch (e) {
+            console.error(e);
+            this.showToast(e.message, 'error');
+        }
+    },
+
+    openImageModal(imageUrl) {
+        const overlay = document.createElement('div');
+        overlay.style.cssText = `
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.85); z-index: 10000;
+            display: flex; align-items: center; justify-content: center;
+            opacity: 0; transition: opacity 0.2s;
+        `;
+
+        const content = document.createElement('div');
+        content.style.cssText = `
+            position: relative;
+            max-width: 90vw;
+            max-height: 90vh;
+            background: #18181b;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+            display: flex;
+            flex-direction: column;
+        `;
+
+        const img = document.createElement('img');
+        img.src = imageUrl;
+        img.style.cssText = `
+            display: block;
+            max-width: 100%;
+            max-height: 85vh;
+            object-fit: contain;
+        `;
+
+        const header = document.createElement('div');
+        header.style.cssText = `
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            padding: 12px;
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            background: linear-gradient(to bottom, rgba(0,0,0,0.6), transparent);
+        `;
+
+        const downloadBtn = document.createElement('a');
+        downloadBtn.href = imageUrl;
+        downloadBtn.download = `image_${Date.now()}.png`;
+        downloadBtn.target = '_blank';
+        downloadBtn.className = 'tk-generate-btn';
+        downloadBtn.style.cssText = `
+            min-width: auto; padding: 6px 12px; font-size: 0.8rem;
+            background: rgba(255, 255, 255, 0.2); backdrop-filter: blur(4px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: white; text-decoration: none; display: flex; align-items: center; gap: 6px;
+        `;
+        downloadBtn.innerHTML = '<span>⬇️</span> 下載 (Download)';
+
+        const closeBtn = document.createElement('button');
+        closeBtn.style.cssText = `
+            background: rgba(0, 0, 0, 0.5); border: none; color: white;
+            width: 32px; height: 32px; border-radius: 50%;
+            cursor: pointer; display: flex; align-items: center; justify-content: center;
+            font-size: 1.2rem;
+        `;
+        closeBtn.innerHTML = '×';
+        closeBtn.onclick = () => {
+            overlay.style.opacity = '0';
+            setTimeout(() => overlay.remove(), 200);
+        };
+
+        header.appendChild(downloadBtn);
+        header.appendChild(closeBtn);
+        content.appendChild(img);
+        content.appendChild(header);
+        overlay.appendChild(content);
+
+        document.body.appendChild(overlay);
+
+        requestAnimationFrame(() => overlay.style.opacity = '1');
+
+        overlay.onclick = (e) => {
+            if (e.target === overlay) closeBtn.click();
+        };
+    },
+
+    showToast(msg, type = 'info') {
+        const toast = document.createElement('div');
+        const bg = type === 'error' ? '#ef4444' : (type === 'success' ? '#10b981' : '#3b82f6');
+        toast.style.cssText = `
+            position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%) translateY(20px);
+            background: ${bg}; color: white; padding: 8px 16px; border-radius: 8px;
+            font-size: 0.875rem; font-weight: 500; box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+            opacity: 0; transition: all 0.3s; z-index: 11000; pointer-events: none;
+        `;
+        toast.innerText = msg;
+        document.body.appendChild(toast);
+
+        requestAnimationFrame(() => {
+            toast.style.transform = 'translateX(-50%) translateY(0)';
+            toast.style.opacity = '1';
+        });
+
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateX(-50%) translateY(20px)';
+            setTimeout(() => toast.remove(), 300);
+        }, 3000);
     }
 };
