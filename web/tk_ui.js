@@ -205,15 +205,36 @@ export const ToolkitUI = {
                     </h4>
                     
                     <div class="tk-form-grid">
-                        ${visibleParams.map(p => `
-                            <div class="tk-form-group">
-                                <label class="tk-label">${p.displayName}</label>
-                                <input type="text" class="tk-input tk-form-input" 
-                                    data-node="${p.nodeId}" 
-                                    data-input="${p.inputName}" 
-                                    value="${p.defaultValue}">
-                            </div>
-                        `).join('')}
+                        ${visibleParams.map(p => {
+            const isLongText = p.inputName.toLowerCase().includes('text') ||
+                p.inputName.toLowerCase().includes('prompt') ||
+                p.displayName.includes('提示詞') ||
+                p.displayName.toLowerCase().includes('prompt');
+
+            if (isLongText) {
+                return `
+                                    <div class="tk-form-group">
+                                        <label class="tk-label">${p.displayName}</label>
+                                        <textarea class="tk-input tk-form-input" 
+                                            data-node="${p.nodeId}" 
+                                            data-input="${p.inputName}" 
+                                            rows="3"
+                                            style="resize: vertical; min-height: 80px; overflow-y: hidden; line-height: 1.5; field-sizing: content; white-space: pre-wrap; overflow-wrap: break-word;"
+                                            oninput="this.style.height = 'auto'; this.style.height = this.scrollHeight + 'px'"
+                                        >${p.defaultValue}</textarea>
+                                    </div>
+                                `;
+            }
+            return `
+                                <div class="tk-form-group">
+                                    <label class="tk-label">${p.displayName}</label>
+                                    <input type="text" class="tk-input tk-form-input" 
+                                        data-node="${p.nodeId}" 
+                                        data-input="${p.inputName}" 
+                                        value="${p.defaultValue}">
+                                </div>
+                            `;
+        }).join('')}
                     </div>
 
                     <div class="tk-action-bar">
