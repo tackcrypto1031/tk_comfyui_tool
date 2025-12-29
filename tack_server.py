@@ -16,6 +16,12 @@ class TackServer:
         if not os.path.exists(self.presets_path):
             with open(self.presets_path, "w", encoding="utf-8") as f:
                 json.dump([], f)
+        
+        self.history_path = os.path.join(self.config_dir, "history.json")
+        self.history_path = os.path.join(self.config_dir, "history.json")
+        # Always clear history on startup to match ComfyUI temp folder behavior
+        with open(self.history_path, "w", encoding="utf-8") as f:
+            json.dump([], f)
 
     def get_presets(self):
         try:
@@ -87,5 +93,26 @@ class TackServer:
                 f.write(image_data)
                 
             return {"status": "success", "url": f"extensions/tk_comfyui_tooldesign/assets/{filename}"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def get_history(self):
+        try:
+            with open(self.history_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            return []
+
+    def save_history(self, history_item):
+        try:
+            history = self.get_history()
+            history.insert(0, history_item) # Add to beginning
+            # Optional: Limit history size
+            if len(history) > 100:
+                history = history[:100]
+                
+            with open(self.history_path, "w", encoding="utf-8") as f:
+                json.dump(history, f, indent=2, ensure_ascii=False)
+            return {"status": "success"}
         except Exception as e:
             return {"status": "error", "message": str(e)}

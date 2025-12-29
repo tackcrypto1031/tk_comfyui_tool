@@ -4,6 +4,61 @@ import { ToolkitUI } from "./tk_ui.js";
 export const ToolkitApp = {
     // --- CACHE ---
     presetsCache: null,
+    historyCache: null,
+    isListening: false,
+
+    init() {
+        if (this.isListening) return;
+        this.isListening = true;
+
+        api.addEventListener('progress', (e) => this.onProgress(e));
+        api.addEventListener('status', (e) => this.onStatus(e));
+        api.addEventListener('executed', (e) => this.onExecuted(e));
+    },
+
+    onProgress(e) {
+        const { value, max } = e.detail;
+        const progress = Math.floor((value / max) * 100);
+        const bar = document.getElementById('tk-progress-area');
+        if (bar) {
+            bar.classList.remove('tk-hidden');
+            document.getElementById('tk-progress-percent').innerText = progress + '%';
+            document.getElementById('tk-progress-fill').style.width = progress + '%';
+        }
+    },
+
+    onStatus(e) {
+        if (!e.detail || !e.detail.exec_info) return;
+        const count = e.detail.exec_info.queue_remaining;
+        const queueElem = document.getElementById('tk-queue-count');
+        if (queueElem) queueElem.innerText = `Waiting: ${count}`;
+
+        if (count === 0) {
+            // Optional: Hide progress bar after a delay?
+            // document.getElementById('tk-progress-area').classList.add('tk-hidden');
+        }
+    },
+
+    onExecuted(e) {
+        // Refresh gallery if open
+        const gallery = document.getElementById('tk-gallery-container');
+        if (gallery) {
+            this.renderGallery(gallery.parentElement); // Re-render
+        }
+
+        // Hide progress if done
+        const bar = document.getElementById('tk-progress-area');
+        if (bar) {
+            document.getElementById('tk-progress-percent').innerText = '100%';
+            document.getElementById('tk-progress-fill').style.width = '100%';
+            setTimeout(() => {
+                if (document.getElementById('tk-queue-count').innerText === 'Waiting: 0') {
+                    bar.classList.add('tk-hidden');
+                }
+                document.getElementById('tk-progress-fill').style.width = '0%';
+            }, 1000);
+        }
+    },
 
     // --- USER MODE ---
 
@@ -66,12 +121,35 @@ export const ToolkitApp = {
             });
 
             if (response.ok) {
-                statusMsg.textContent = "✅ 已成功加入隊列！請查看 ComfyUI。";
+                const resData = await response.json();
+
+                // Save to history
+                try {
+                    await api.fetchApi('/tk/save_history', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            id: crypto.randomUUID(),
+                            prompt_id: resData.prompt_id,
+                            preset_name: preset.name,
+                            timestamp: Date.now(),
+                            workflow: preset.workflow,
+                            status: 'queued'
+                        })
+                    });
+                } catch (err) { console.error("Failed to save history", err); }
+
+                statusMsg.innerHTML = `✅ 已成功加入隊列！<br><span style="font-size:0.8em; color:var(--tk-emerald-400); cursor:pointer; text-decoration:underline;" onclick="document.querySelector('[data-tab=gallery]').click()">👉 前往「我的作品」查看進度</span>`;
+
                 setTimeout(() => {
                     btn.disabled = false;
                     btn.innerHTML = '<span style="font-size: 1.2rem;">⚡</span> 生成圖片 (Generate)';
                     statusContainer.classList.add('tk-hidden');
                 }, 4000);
+
+                // Force progress bar show
+                const bar = document.getElementById('tk-progress-area');
+                if (bar) bar.classList.remove('tk-hidden');
+
             } else {
                 throw new Error("API Error: " + response.status);
             }
@@ -82,6 +160,83 @@ export const ToolkitApp = {
             statusMsg.textContent = "❌ 發生錯誤: " + e.message;
             btn.disabled = false;
             btn.innerHTML = '重試 (Retry)';
+        }
+    },
+
+    async renderGallery(container) {
+        container.innerHTML = `
+            <div id="tk-gallery-container" style="height:100%; display:flex; flex-direction:column;">
+                <h3 class="tk-sidebar-label" style="font-size:1.2rem; margin-bottom:1rem;">我的作品 (My Creations)</h3>
+                <div id="tk-gallery-grid" class="tk-gallery-grid">
+                    Loading...
+                </div>
+            </div>
+        `;
+
+        try {
+            // Fetch TK history
+            const res = await api.fetchApi('/tk/history');
+            const history = await res.json();
+
+            // Process history to get images
+            const items = await Promise.all(history.map(async (item) => {
+                // If we don't have an image url recorded, try to find it from Comfy API
+                // Note: Ideally we store the image path when 'executed' event fires, but for now we fetch it
+                if (!item.image_url) {
+                    try {
+                        const hRes = await api.fetchApi('/history/' + item.prompt_id);
+                        if (hRes.ok) {
+                            const hData = await hRes.json();
+                            const data = hData[item.prompt_id];
+                            if (data && data.outputs) {
+                                // Find first image
+                                for (const nodeId in data.outputs) {
+                                    const images = data.outputs[nodeId].images;
+                                    if (images && images.length > 0) {
+                                        const img = images[0];
+                                        item.image_url = `/view?filename=${img.filename}&subfolder=${img.subfolder}&type=${img.type}`;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    } catch (e) { }
+                }
+                return item;
+            }));
+
+            const grid = document.getElementById('tk-gallery-grid');
+            if (!grid) return;
+
+            grid.innerHTML = '';
+
+            if (items.length === 0) {
+                grid.innerHTML = '<div style="padding:2rem; color:var(--tk-zinc-500);">尚無生成紀錄</div>';
+                return;
+            }
+
+            items.forEach(item => {
+                const card = document.createElement('div');
+                card.className = 'tk-gallery-item';
+
+                const date = new Date(item.timestamp).toLocaleString();
+                const imgHtml = item.image_url
+                    ? `<img src="${item.image_url}" class="tk-gallery-img" onclick="window.open('${item.image_url}', '_blank')">`
+                    : `<div class="tk-gallery-img" style="display:flex;align-items:center;justify-content:center;color:var(--tk-zinc-600);font-size:2rem;">⏳</div>`;
+
+                card.innerHTML = `
+                    ${imgHtml}
+                    <div class="tk-gallery-meta">
+                        <span class="tk-gallery-tag">${item.preset_name || 'Unknown'}</span>
+                        <div style="color:var(--tk-zinc-500); font-size:0.65rem;">${date}</div>
+                    </div>
+                 `;
+                grid.appendChild(card);
+            });
+
+        } catch (e) {
+            console.error(e);
+            container.innerHTML = `<div style="color:red;">載入失敗: ${e.message}</div>`;
         }
     },
 

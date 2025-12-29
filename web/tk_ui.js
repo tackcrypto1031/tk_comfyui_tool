@@ -28,10 +28,10 @@ export const ToolkitUI = {
                         <span class="tk-logo-text">TK Toolkit Pro</span>
                     </div>
                     
-                    <nav class="tk-tabs">
                         <button class="tk-tab-btn" data-tab="t2i">🖼️ 文生圖</button>
                         <button class="tk-tab-btn" data-tab="i2i">🎨 圖生圖</button>
                         <button class="tk-tab-btn" data-tab="edit">🔨 圖片編輯</button>
+                        <button class="tk-tab-btn" data-tab="gallery">📂 我的作品</button>
                         <button class="tk-tab-btn" data-tab="admin" style="margin-left:8px;">⚙️ 管理員</button>
                     </nav>
                     
@@ -48,6 +48,17 @@ export const ToolkitUI = {
                         <h3 class="tk-sidebar-label">常用項目</h3>
                         <div id="tk-sidebar-list" class="tk-sidebar-list">
                             <!-- Presets list will be injected here -->
+                        </div>
+                        
+                        <div id="tk-progress-area" class="tk-progress-container tk-hidden">
+                            <div class="tk-progress-label">
+                                <span id="tk-progress-title">Generating...</span>
+                                <span id="tk-progress-percent">0%</span>
+                            </div>
+                            <div class="tk-progress-bar">
+                                <div id="tk-progress-fill" class="tk-progress-fill"></div>
+                            </div>
+                            <div id="tk-queue-count" class="tk-queue-info">Waiting: 0</div>
                         </div>
                     </aside>
                     
@@ -92,6 +103,9 @@ export const ToolkitUI = {
         if (tabName === 'admin') {
             sidebar.classList.add('tk-hidden');
             ToolkitApp.renderAdminPanel(mainPanel);
+        } else if (tabName === 'gallery') {
+            sidebar.classList.add('tk-hidden');
+            ToolkitApp.renderGallery(mainPanel);
         } else {
             sidebar.classList.remove('tk-hidden');
             // Show loading if cache is empty or it's a new category

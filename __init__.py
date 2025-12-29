@@ -51,4 +51,13 @@ async def upload_image(request):
     except Exception as e:
         return web.json_response({"status": "error", "message": str(e)})
 
+@PromptServer.instance.routes.get("/tk/history")
+async def get_history(request):
+    return web.json_response(server_util.get_history())
+
+@PromptServer.instance.routes.post("/tk/save_history")
+async def save_history(request):
+    data = await request.json()
+    return web.json_response(server_util.save_history(data))
+
 print("🍌 ComfyUI Toolkit Node: Loaded")

@@ -546,6 +546,88 @@
     border-radius: 3px;
 }
 
+/* Progress Bar */
+.tk-progress-container {
+    margin-top: auto;
+    padding: 1rem;
+    background: rgba(9, 9, 11, 0.3);
+    border-top: 1px solid var(--tk-border);
+}
+
+.tk-progress-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    color: var(--tk-zinc-400);
+    margin-bottom: 0.5rem;
+}
+
+.tk-progress-bar {
+    height: 6px;
+    background: var(--tk-zinc-800);
+    border-radius: 3px;
+    overflow: hidden;
+    position: relative;
+}
+
+.tk-progress-fill {
+    height: 100%;
+    background: var(--tk-emerald-500);
+    width: 0%;
+    transition: width 0.3s ease;
+    border-radius: 3px;
+}
+
+.tk-queue-info {
+    font-size: 0.7rem;
+    color: var(--tk-zinc-600);
+    margin-top: 0.25rem;
+    text-align: right;
+}
+
+.tk-gallery-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 1rem;
+    padding: 1rem;
+}
+
+.tk-gallery-item {
+    background: rgba(39, 39, 42, 0.2);
+    border: 1px solid var(--tk-border);
+    border-radius: var(--tk-radius-md);
+    overflow: hidden;
+    position: relative;
+    transition: transform 0.2s;
+}
+
+.tk-gallery-item:hover {
+    transform: translateY(-4px);
+    border-color: var(--tk-emerald-500);
+}
+
+.tk-gallery-img {
+    width: 100%;
+    aspect-ratio: 1;
+    object-fit: cover;
+    background: #000;
+}
+
+.tk-gallery-meta {
+    padding: 0.5rem;
+    font-size: 0.75rem;
+}
+
+.tk-gallery-tag {
+    background: rgba(16, 185, 129, 0.1);
+    color: var(--tk-emerald-400);
+    padding: 2px 6px;
+    border-radius: 4px;
+    display: inline-block;
+    margin-bottom: 4px;
+    font-size: 0.65rem;
+}
+
 .tk-modal-window *::-webkit-scrollbar-thumb:hover {
     background: var(--tk-zinc-700);
 }
