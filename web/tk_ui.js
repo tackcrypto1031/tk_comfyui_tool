@@ -94,13 +94,18 @@ export const ToolkitUI = {
             ToolkitApp.renderAdminPanel(mainPanel);
         } else {
             sidebar.classList.remove('tk-hidden');
-            mainPanel.innerHTML = `
-                <div style="height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; color:#52525b; animation: tk-fade-in 0.5s;">
-                    <div class="tk-badge-pulse" style="width:12px; height:12px; margin-bottom:1rem;"></div>
-                    <p style="font-weight: 500; font-size: 0.875rem; letter-spacing: 0.05em;">正在加載預設項目...</p>
-                </div>
-            `;
-            ToolkitApp.loadPresets(tabName, document.getElementById('tk-sidebar-list'), mainPanel);
+            // Show loading if cache is empty or it's a new category
+            const currentCat = sidebar.dataset.category;
+            if (currentCat !== tabName || !ToolkitApp.presetsCache) {
+                sidebar.dataset.category = tabName;
+                mainPanel.innerHTML = `
+                    <div style="height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; color:#52525b; animation: tk-fade-in 0.5s;">
+                        <div class="tk-badge-pulse" style="width:12px; height:12px; margin-bottom:1rem;"></div>
+                        <p style="font-weight: 500; font-size: 0.875rem; letter-spacing: 0.05em;">正在加載預設項目...</p>
+                    </div>
+                `;
+                ToolkitApp.loadPresets(tabName, document.getElementById('tk-sidebar-list'), mainPanel);
+            }
         }
     },
 
@@ -141,7 +146,7 @@ export const ToolkitUI = {
             const card = document.createElement('div');
             card.className = 'tk-preset-card';
             card.innerHTML = `
-                <img src="${p.previewImageUrl || ''}" class="tk-preset-thumb" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2248%22 height=%2248%22><rect width=%2248%22 height=%2248%22 fill=%22%2318181b%22/><text x=%2250%%22 y=%2250%%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 fill=%22%233f3f46%22 font-size=%2220%22>?</text></svg>'">
+                <img src="${p.previewImageUrl || ''}" class="tk-preset-thumb" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2248%22 height=%2248%22><rect width=%2248%22 height=%2248%22 fill=%22%2318181b%22/><text x=%2250%%22 y=%2250%%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 fill=%22%233f3f46%22 font-size=%2220%22>?</text></svg>'">
                 <div class="tk-preset-info">
                     <span class="tk-preset-name">${p.name}</span>
                     <span class="tk-preset-meta">工作流已就緒</span>
@@ -171,7 +176,7 @@ export const ToolkitUI = {
         container.innerHTML = `
             <div class="tk-preset-content">
                 <div class="tk-preview-section">
-                    <img src="${preset.previewImageUrl}" class="tk-preview-img" onerror="this.style.opacity='0.2'">
+                    <img src="${preset.previewImageUrl}" class="tk-preview-img" loading="lazy" onerror="this.style.opacity='0.2'">
                     <div class="tk-preview-badge">
                         <div class="tk-badge-pulse"></div>
                         <span class="tk-badge-text">目前預設</span>

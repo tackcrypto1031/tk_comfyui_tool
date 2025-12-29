@@ -2,13 +2,18 @@ import { api } from "../../scripts/api.js";
 import { ToolkitUI } from "./tk_ui.js";
 
 export const ToolkitApp = {
+    // --- CACHE ---
+    presetsCache: null,
+
     // --- USER MODE ---
 
     async loadPresets(category, sidebarList, mainPanel) {
         try {
-            const response = await api.fetchApi('/tk/presets');
-            const presets = await response.json();
-            const filtered = presets.filter(p => p.category === category);
+            if (!this.presetsCache) {
+                const response = await api.fetchApi('/tk/presets');
+                this.presetsCache = await response.json();
+            }
+            const filtered = this.presetsCache.filter(p => p.category === category);
             ToolkitUI.renderPresetList(filtered, sidebarList, mainPanel, category);
         } catch (e) {
             console.error(e);
@@ -187,8 +192,11 @@ export const ToolkitApp = {
         if (!listContainer) return;
 
         try {
-            const response = await api.fetchApi('/tk/presets');
-            const presets = await response.json();
+            if (!this.presetsCache) {
+                const response = await api.fetchApi('/tk/presets');
+                this.presetsCache = await response.json();
+            }
+            const presets = this.presetsCache;
 
             listContainer.innerHTML = '';
             if (presets.length === 0) listContainer.innerHTML = '<div style="color:var(--tk-zinc-600); font-size: 0.875rem; text-align:center; padding: 2rem;">尚無預設項目</div>';
@@ -219,6 +227,7 @@ export const ToolkitApp = {
                 item.querySelector('.tk-del-mini').onclick = async () => {
                     if (confirm(`確定要刪除 "${p.name}" 嗎？`)) {
                         await api.fetchApi('/tk/delete_preset', { method: 'POST', body: JSON.stringify({ id: p.id }) });
+                        this.presetsCache = null; // Clear cache
                         this.loadAdminPresetList();
                     }
                 };
@@ -359,6 +368,7 @@ export const ToolkitApp = {
         const res = await api.fetchApi('/tk/save_preset', { method: 'POST', body: JSON.stringify(presetData) });
         if (res.ok) {
             alert("保存成功！");
+            this.presetsCache = null; // Clear cache
             document.getElementById('tk-config-area').classList.add('tk-hidden');
             this.editingPresetId = null;
             this.currentWorkflow = null;
