@@ -60,6 +60,14 @@ export const ToolkitApp = {
         }
     },
 
+    // --- UTILS ---
+    uuidv4() {
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+            const r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+            return v.toString(16);
+        });
+    },
+
     // --- USER MODE ---
 
     async loadPresets(category, sidebarList, mainPanel) {
@@ -128,7 +136,7 @@ export const ToolkitApp = {
                     await api.fetchApi('/tk/save_history', {
                         method: 'POST',
                         body: JSON.stringify({
-                            id: crypto.randomUUID(),
+                            id: this.uuidv4(),
                             prompt_id: resData.prompt_id,
                             preset_name: preset.name,
                             timestamp: Date.now(),
@@ -512,7 +520,7 @@ export const ToolkitApp = {
         });
 
         const presetData = {
-            id: this.editingPresetId || crypto.randomUUID(),
+            id: this.editingPresetId || this.uuidv4(),
             name,
             category,
             previewImageUrl: image,
