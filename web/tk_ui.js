@@ -102,9 +102,11 @@ export const ToolkitUI = {
 
         if (tabName === 'admin') {
             sidebar.classList.add('tk-hidden');
+            delete sidebar.dataset.category;
             ToolkitApp.renderAdminPanel(mainPanel);
         } else if (tabName === 'gallery') {
             sidebar.classList.add('tk-hidden');
+            delete sidebar.dataset.category;
             ToolkitApp.renderGallery(mainPanel);
         } else {
             sidebar.classList.remove('tk-hidden');
