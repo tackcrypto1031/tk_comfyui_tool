@@ -25,7 +25,7 @@ export const ToolkitUI = {
                 <header class="tk-header">
                     <div class="tk-logo-area">
                         <span style="font-size: 1.5rem;">🍌</span>
-                        <span class="tk-logo-text">TK Toolkit Pro</span>
+                        <span class="tk-logo-text">塔克小工具</span>
                     </div>
                     
                         <button class="tk-tab-btn" data-tab="t2i">🖼️ 文生圖</button>
