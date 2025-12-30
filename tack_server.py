@@ -116,3 +116,52 @@ class TackServer:
             return {"status": "success"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
+
+    def save_input_image(self, image_data, original_filename):
+        """
+        Save uploaded image to local image_upload folder.
+        Renames file to random alphanumeric (max 20 chars).
+        Returns filename for frontend to use in secondary standard upload.
+        """
+        import string
+        import random
+        
+        try:
+            # Custom image_upload directory
+            upload_dir = os.path.join(self.base_dir, "image_upload")
+            if not os.path.exists(upload_dir):
+                os.makedirs(upload_dir)
+            
+            # Get file extension
+            _, ext = os.path.splitext(original_filename)
+            if not ext:
+                ext = ".png"
+            
+            # Generate shorter random alphanumeric name (e.g. img_ + 10 chars + ext)
+            random_str = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
+            safe_name = f"img_{random_str}{ext}"
+            
+            # Full path in custom upload directory
+            file_path = os.path.join(upload_dir, safe_name)
+            
+            # Collision check
+            if os.path.exists(file_path):
+                random_str = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
+                safe_name = f"img_{random_str}{ext}"
+                file_path = os.path.join(upload_dir, safe_name)
+            
+            # Write file
+            with open(file_path, "wb") as f:
+                f.write(image_data)
+            
+            return {
+                "status": "success",
+                "filename": safe_name,
+                "abs_path": file_path, # Return absolute path for LoadImageFromPath
+                "subfolder": "",  
+                "type": "input",
+                "preview_url": f"/tk/view_upload/{safe_name}" 
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+

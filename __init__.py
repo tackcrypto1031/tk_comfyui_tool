@@ -60,4 +60,47 @@ async def save_history(request):
     data = await request.json()
     return web.json_response(server_util.save_history(data))
 
+@PromptServer.instance.routes.post("/tk/upload_input_image")
+async def upload_input_image(request):
+    """Upload image to local image_upload folder for LoadImage nodes."""
+    try:
+        reader = await request.multipart()
+        field = await reader.next()
+        filename = field.filename
+        content = await field.read()
+        return web.json_response(server_util.save_input_image(content, filename))
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)})
+
+@PromptServer.instance.routes.get("/tk/view_upload/{filename}")
+async def view_upload(request):
+    """Serve uploaded images from image_upload folder."""
+    import mimetypes
+    filename = request.match_info['filename']
+    upload_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "image_upload")
+    file_path = os.path.join(upload_dir, filename)
+    
+    if not os.path.exists(file_path):
+        return web.Response(status=404, text="File not found")
+    
+    mime_type, _ = mimetypes.guess_type(file_path)
+    if mime_type is None:
+        mime_type = 'application/octet-stream'
+    
+    with open(file_path, 'rb') as f:
+        content = f.read()
+    
+    return web.Response(body=content, content_type=mime_type)
+
+@PromptServer.instance.routes.get("/tk/debug/input_files")
+async def debug_input_files(request):
+    """Debug endpoint to see what ComfyUI sees in input folder."""
+    import folder_paths
+    try:
+        input_dir = folder_paths.get_input_directory()
+        files = os.listdir(input_dir)
+        return web.json_response({"status": "success", "input_dir": input_dir, "files": files})
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)})
+
 print("🍌 ComfyUI Toolkit Node: Loaded")

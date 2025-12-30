@@ -109,9 +109,22 @@ export const ToolkitApp = {
                 let value = input.value;
 
                 const randomToggle = document.querySelector(`.tk-random-seed-toggle[data-node="${nodeId}"][data-input="${inputName}"]`);
+
+                // 1. Random Seed
                 if (randomToggle && randomToggle.checked) {
                     value = Math.floor(Math.random() * 100000000000000);
-                } else {
+                }
+                // 2. Explicit Type Handling
+                else if (input.dataset.type === 'number') {
+                    if (value.includes('.')) value = parseFloat(value);
+                    else value = parseInt(value);
+                }
+                else if (input.dataset.type === 'string' || input.dataset.nodeClass === 'LoadImage') {
+                    // Keep as string
+                    value = String(value);
+                }
+                // 3. Fallback Heuristic (Legacy)
+                else {
                     if (!isNaN(value) && value.trim() !== '') {
                         if (value.includes('.')) value = parseFloat(value);
                         else value = parseInt(value);
@@ -120,8 +133,77 @@ export const ToolkitApp = {
 
                 if (workflow[nodeId] && workflow[nodeId].inputs) {
                     workflow[nodeId].inputs[inputName] = value;
+
+                    // CRITICAL FIX for LoadImageFromPath
+                    // If the UI knows this is LoadImageFromPath (via preset), but the underlying workflow 
+                    // still says LoadImage (due to stale preset data), validation will fail.
+                    // We FORCE the class_type to match what the UI logic expects.
+                    if (input.dataset.nodeClass === 'LoadImageFromPath') {
+                        // Ensure we update it so ComfyUI knows to check for absolute path input
+                        console.log(`🔧 Auto-Correcting Node ${nodeId} class_type to LoadImageFromPath`);
+                        workflow[nodeId].class_type = 'LoadImageFromPath';
+                        // Remove potential 'upload' or 'subfolder' keys that LoadImageFromPath doesn't need
+                        if (workflow[nodeId].inputs['upload']) delete workflow[nodeId].inputs['upload'];
+                        if (workflow[nodeId].inputs['subfolder']) delete workflow[nodeId].inputs['subfolder'];
+                    }
                 }
             });
+
+            // Validation & Sanitization: LoadImage nodes
+            for (const nodeId in workflow) {
+                const node = workflow[nodeId];
+                if (node.class_type === 'LoadImage') {
+                    // 1. Force 'image' to be a string
+                    if (node.inputs && node.inputs['image']) {
+                        node.inputs['image'] = String(node.inputs['image']).trim();
+                    }
+
+                    // 2. Explicitly set subfolder to empty string if missing or null, to match standard API behavior
+                    if (!node.inputs['subfolder']) {
+                        node.inputs['subfolder'] = "";
+                    }
+
+                    const val = node.inputs['image'];
+                    if (!val || val === '') {
+                        alert(`❌ Node ${nodeId} (${node._meta?.title || 'LoadImage'}) requires an image! Please upload one.`);
+                        btn.disabled = false;
+                        btn.innerHTML = '重試 (Retry)';
+                        statusContainer.classList.add('tk-hidden');
+                        return; // Stop execution
+                    }
+
+                    // Log the sanitized node for debugging
+                    console.log(`🧹 Sanitized LoadImage Node ${nodeId}:`, JSON.stringify(node.inputs));
+                }
+            }
+
+            // Detailed debug logging
+            console.log("🚀 Executing Workflow:", workflow);
+
+            // Check for output nodes
+            const outputTypes = ['SaveImage', 'PreviewImage'];
+            const outputNodes = [];
+            for (const nodeId in workflow) {
+                const node = workflow[nodeId];
+                if (outputTypes.includes(node.class_type)) {
+                    outputNodes.push({ id: nodeId, type: node.class_type, inputs: node.inputs });
+                }
+            }
+            console.log("📤 Output Nodes Found:", outputNodes);
+
+            if (outputNodes.length === 0) {
+                alert("❌ Warning: No SaveImage/PreviewImage nodes found in workflow! This will cause ComfyUI to reject the prompt.");
+                console.error("No output nodes in workflow. ComfyUI requires at least one SaveImage or PreviewImage node.");
+            }
+
+            // Also log LoadImage nodes specifically
+            console.log("🖼️ LoadImage Nodes:");
+            for (const nodeId in workflow) {
+                const node = workflow[nodeId];
+                if (node.class_type === 'LoadImage') {
+                    console.log(`  Node ${nodeId}:`, JSON.stringify(node.inputs));
+                }
+            }
 
             statusMsg.textContent = "📡 正在發送到 ComfyUI...";
 
@@ -167,7 +249,16 @@ export const ToolkitApp = {
                 if (bar) bar.classList.remove('tk-hidden');
 
             } else {
-                throw new Error("API Error: " + response.status);
+                let errText = response.statusText;
+                try {
+                    const errJson = await response.json();
+                    if (errJson && errJson.error) errText = JSON.stringify(errJson.error);
+                    else if (errJson) errText = JSON.stringify(errJson);
+                } catch (e2) {
+                    const txt = await response.text();
+                    if (txt) errText = txt;
+                }
+                throw new Error(`API Error ${response.status}: ${errText}`);
             }
 
         } catch (e) {
@@ -410,39 +501,65 @@ export const ToolkitApp = {
             listContainer.innerHTML = '';
             if (presets.length === 0) listContainer.innerHTML = '<div style="color:var(--tk-zinc-600); font-size: 0.875rem; text-align:center; padding: 2rem;">尚無預設項目</div>';
 
+            const categories = {
+                't2i': '🖼️ 文生圖 (T2I)',
+                'i2i': '🎨 圖生圖 (I2I)',
+                'edit': '🔨 圖片編輯 (Edit)',
+                'other': '📁 其他'
+            };
+
+            // Group by category
+            const grouped = {};
             presets.forEach(p => {
-                const item = document.createElement('div');
-                item.style.cssText = "display:flex; align-items:center; gap:0.75rem; background:rgba(39,39,42,0.4); padding:0.75rem; border-radius:12px; border:1px solid var(--tk-border); transition: all 0.2s; position: relative; overflow: hidden;";
-                item.innerHTML = `
-                    <div style="width:40px; height:40px; border-radius:8px; background:var(--tk-zinc-900); overflow:hidden; border:1px solid var(--tk-border);">
-                        <img src="${p.previewImageUrl}" style="width:100%; height:100%; object-fit:cover; opacity: 0.8;">
-                    </div>
-                    <div style="flex:1; min-width:0;">
-                         <div style="font-size:0.875rem; font-weight:600; color:var(--tk-zinc-200); text-overflow:ellipsis; overflow:hidden; white-space:nowrap;">${p.name}</div>
-                         <div style="font-size:0.65rem; color:var(--tk-zinc-500); text-transform:uppercase;">${p.category}</div>
-                    </div>
-                    <div style="display:flex; gap:6px;">
-                         <button class="tk-edit-mini" style="background:var(--tk-emerald-500); border:none; color:#000; padding:6px 12px; border-radius:8px; cursor:pointer; font-size:11px; font-weight:700; transition:all 0.2s;">🔏 編輯</button>
-                         <button class="tk-del-mini" style="background:rgba(239,68,68,0.2); border:1px solid rgba(239,68,68,0.3); color:#f87171; padding:6px 12px; border-radius:8px; cursor:pointer; font-size:11px; font-weight:600; transition:all 0.2s;">🗑️ 刪除</button>
-                    </div>
-                `;
-
-                item.querySelector('.tk-edit-mini').onmouseover = (e) => e.target.style.transform = 'scale(1.05)';
-                item.querySelector('.tk-edit-mini').onmouseout = (e) => e.target.style.transform = 'scale(1)';
-                item.querySelector('.tk-del-mini').onmouseover = (e) => e.target.style.background = 'rgba(239,68,68,0.3)';
-                item.querySelector('.tk-del-mini').onmouseout = (e) => e.target.style.background = 'rgba(239,68,68,0.2)';
-
-                item.querySelector('.tk-edit-mini').onclick = () => this.loadPresetForEditing(p);
-                item.querySelector('.tk-del-mini').onclick = async () => {
-                    if (confirm(`確定要刪除 "${p.name}" 嗎？`)) {
-                        await api.fetchApi('/tk/delete_preset', { method: 'POST', body: JSON.stringify({ id: p.id }) });
-                        this.presetsCache = null; // Clear cache
-                        this.loadAdminPresetList();
-                    }
-                };
-
-                listContainer.appendChild(item);
+                const cat = p.category || 'other';
+                if (!grouped[cat]) grouped[cat] = [];
+                grouped[cat].push(p);
             });
+
+            // Render groups
+            for (const [catArgs, catName] of Object.entries(categories)) {
+                const groupPresets = grouped[catArgs];
+                if (!groupPresets || groupPresets.length === 0) continue;
+
+                const groupHeader = document.createElement('h4');
+                groupHeader.style.cssText = "color: var(--tk-zinc-400); font-size: 0.8rem; margin: 1rem 0 0.5rem 0; padding-left: 4px; text-transform: uppercase; letter-spacing: 0.05em;";
+                groupHeader.textContent = catName;
+                listContainer.appendChild(groupHeader);
+
+                groupPresets.forEach(p => {
+                    const item = document.createElement('div');
+                    item.style.cssText = "display:flex; align-items:center; gap:0.75rem; background:rgba(39,39,42,0.4); padding:0.75rem; border-radius:12px; border:1px solid var(--tk-border); transition: all 0.2s; position: relative; overflow: hidden; margin-bottom: 8px;";
+                    item.innerHTML = `
+                        <div style="width:40px; height:40px; border-radius:8px; background:var(--tk-zinc-900); overflow:hidden; border:1px solid var(--tk-border);">
+                            <img src="${p.previewImageUrl}" style="width:100%; height:100%; object-fit:cover; opacity: 0.8;">
+                        </div>
+                        <div style="flex:1; min-width:0;">
+                             <div style="font-size:0.875rem; font-weight:600; color:var(--tk-zinc-200); text-overflow:ellipsis; overflow:hidden; white-space:nowrap;">${p.name}</div>
+                             <div style="font-size:0.65rem; color:var(--tk-zinc-500); text-transform:uppercase;">${p.category}</div>
+                        </div>
+                        <div style="display:flex; gap:6px;">
+                             <button class="tk-edit-mini" style="background:var(--tk-emerald-500); border:none; color:#000; padding:6px 12px; border-radius:8px; cursor:pointer; font-size:11px; font-weight:700; transition:all 0.2s;">🔏 編輯</button>
+                             <button class="tk-del-mini" style="background:rgba(239,68,68,0.2); border:1px solid rgba(239,68,68,0.3); color:#f87171; padding:6px 12px; border-radius:8px; cursor:pointer; font-size:11px; font-weight:600; transition:all 0.2s;">🗑️ 刪除</button>
+                        </div>
+                    `;
+
+                    item.querySelector('.tk-edit-mini').onmouseover = (e) => e.target.style.transform = 'scale(1.05)';
+                    item.querySelector('.tk-edit-mini').onmouseout = (e) => e.target.style.transform = 'scale(1)';
+                    item.querySelector('.tk-del-mini').onmouseover = (e) => e.target.style.background = 'rgba(239,68,68,0.3)';
+                    item.querySelector('.tk-del-mini').onmouseout = (e) => e.target.style.background = 'rgba(239,68,68,0.2)';
+
+                    item.querySelector('.tk-edit-mini').onclick = () => this.loadPresetForEditing(p);
+                    item.querySelector('.tk-del-mini').onclick = async () => {
+                        if (confirm(`確定要刪除 "${p.name}" 嗎？`)) {
+                            await api.fetchApi('/tk/delete_preset', { method: 'POST', body: JSON.stringify({ id: p.id }) });
+                            this.presetsCache = null; // Clear cache
+                            this.loadAdminPresetList();
+                        }
+                    };
+
+                    listContainer.appendChild(item);
+                });
+            }
         } catch (e) {
             listContainer.innerHTML = `<div style="color:red; font-size:0.75rem;">載入失敗: ${e.message}</div>`;
         }
@@ -555,13 +672,17 @@ export const ToolkitApp = {
                 else defaultValue = parseInt(defaultValue);
             }
 
+            const nodeData = this.currentWorkflow[nodeId];
+            const nodeClass = nodeData ? nodeData.class_type : "";
+
             parameters.push({
                 nodeId,
                 nodeTitle: "Node " + nodeId,
                 inputName,
                 visible: true,
                 displayName: displayName || inputName,
-                defaultValue
+                defaultValue,
+                nodeClass
             });
         });
 
@@ -680,6 +801,136 @@ export const ToolkitApp = {
         } catch (e) {
             console.error(e);
             this.showToast(e.message, 'error');
+        }
+    },
+
+    async uploadInputImage(inputElement, nodeId, inputName) {
+        const file = inputElement.files[0];
+        if (!file) return;
+
+        const formData = new FormData();
+        formData.append('image', file);
+
+        const previewContainer = document.getElementById(`preview-${nodeId}-${inputName}`);
+        if (previewContainer) {
+            previewContainer.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100px;"><div class="tk-badge-pulse" style="width:20px;height:20px;"></div></div>';
+        }
+
+        try {
+            // Use custom upload endpoint that saves to local image_upload folder
+            const response = await api.fetchApi('/tk/upload_input_image', {
+                method: 'POST',
+                body: formData
+            });
+            const data = await response.json();
+
+            if (data.status !== 'success') {
+                throw new Error(data.message || 'Upload failed');
+            }
+
+            // data format: {status: "success", filename: "xxx.png", abs_path: "D:/...", relative_url: "extensions/..."}
+            // data format: {status: "success", filename: "img_xxx.png", abs_path: "...", ...}
+            const customFilename = data.filename;
+            console.log("📤 Custom Upload Success:", customFilename);
+
+            // Determine Node Type
+            const inputEl = document.querySelector(`.tk-form-input[data-node="${nodeId}"][data-input="${inputName}"]`);
+            const nodeClass = inputEl ? inputEl.dataset.nodeClass : '';
+            const isLoadImageFromPath = nodeClass === 'LoadImageFromPath';
+
+            if (isLoadImageFromPath) {
+                // CASE A: LoadImageFromPath -> Use Absolute Path
+                console.log("📂 Detected LoadImageFromPath. Using absolute path.");
+                const absPath = data.abs_path;
+
+                if (!absPath) {
+                    throw new Error("Backend did not return absolute path for LoadImageFromPath.");
+                }
+
+                // Update Input directly
+                if (inputEl) {
+                    inputEl.value = absPath;
+                    inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+                }
+
+                // Update Preview (Standard API won't see this file, so use our custom route)
+                if (previewContainer) {
+                    previewContainer.innerHTML = `<img src="${data.preview_url}" style="max-width:100%; max-height:200px; border-radius:8px; margin-bottom:8px; box-shadow:0 4px 6px rgba(0,0,0,0.2);">`;
+                }
+
+            } else {
+                // CASE B: Standard LoadImage -> Use Two-Step Upload (Plan B)
+                // We take the SAME file data but upload it via standard API using the NEW name
+                try {
+                    const standardFormData = new FormData();
+                    const renamedFile = new File([file], customFilename, { type: file.type });
+                    standardFormData.append('image', renamedFile);
+                    standardFormData.append('overwrite', 'true');
+
+                    const standardRes = await api.fetchApi('/upload/image', {
+                        method: 'POST',
+                        body: standardFormData
+                    });
+                    const standardData = await standardRes.json();
+
+                    const finalFilename = standardData.name;
+                    console.log("✅ Standard Upload Success:", finalFilename);
+
+                    const hiddenInput = document.querySelector(`.tk-form-input[data-node="${nodeId}"][data-input="${inputName}"]`);
+                    if (hiddenInput) {
+                        hiddenInput.value = finalFilename;
+                        hiddenInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    }
+
+                    if (previewContainer) {
+                        const url = `/view?filename=${encodeURIComponent(finalFilename)}&type=input`;
+                        previewContainer.innerHTML = `<img src="${url}" style="max-width:100%; max-height:200px; border-radius:8px; margin-bottom:8px; box-shadow:0 4px 6px rgba(0,0,0,0.2);">`;
+                    }
+
+                } catch (stdErr) {
+                    console.error("Standard upload failed", stdErr);
+                    throw new Error("Standard upload failed: " + stdErr.message);
+                }
+            }
+
+            // Old valid logic removed. New logic handles everything above.
+
+        } catch (e) {
+            console.error(e);
+            if (previewContainer) previewContainer.innerHTML = `<div style="color:#ef4444; font-size:0.8rem; padding:10px;">上傳失敗 (Upload Failed): ${e.message}</div>`;
+            alert("Upload failed: " + e.message);
+        }
+    },
+
+    // --- Drag and Drop Handlers ---
+    handleDragOver(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const area = e.currentTarget;
+        area.style.background = 'var(--tk-zinc-800)';
+        area.style.borderColor = 'var(--tk-emerald-500)';
+    },
+
+    handleDragLeave(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const area = e.currentTarget;
+        area.style.background = 'var(--tk-zinc-900)';
+        area.style.borderColor = 'var(--tk-border)';
+    },
+
+    handleDrop(e, nodeId, inputName) {
+        e.preventDefault();
+        e.stopPropagation();
+        const area = e.currentTarget;
+        area.style.background = 'var(--tk-zinc-900)';
+        area.style.borderColor = 'var(--tk-border)';
+
+        const dt = e.dataTransfer;
+        const files = dt.files;
+        if (files && files.length > 0) {
+            // Emulate input element
+            this.uploadInputImage({ files: files }, nodeId, inputName);
         }
     },
 

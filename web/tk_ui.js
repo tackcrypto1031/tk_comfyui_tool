@@ -206,6 +206,8 @@ export const ToolkitUI = {
                     
                     <div class="tk-form-grid">
                         ${visibleParams.map(p => {
+            const isLoadImage = p.nodeClass === 'LoadImage' || p.nodeClass === 'LoadImageFromPath';
+
             const isLongText = p.inputName.toLowerCase().includes('text') ||
                 p.inputName.toLowerCase().includes('prompt') ||
                 p.displayName.includes('提示詞') ||
@@ -215,6 +217,35 @@ export const ToolkitUI = {
                 p.inputName.toLowerCase() === 'noise_seed' ||
                 p.displayName.includes('Seed');
 
+            if (isLoadImage) {
+                return `
+                    <div class="tk-form-group">
+                        <label class="tk-label">${p.displayName}</label>
+                        <div class="tk-image-upload-area" 
+                             style="background:var(--tk-zinc-900); border:1px dashed var(--tk-border); border-radius:8px; padding:12px; text-align:center; transition: all 0.2s;"
+                             ondragover="ToolkitApp.handleDragOver(event)"
+                             ondragleave="ToolkitApp.handleDragLeave(event)"
+                             ondrop="ToolkitApp.handleDrop(event, '${p.nodeId}', '${p.inputName}')">
+                             <input type="file" accept="image/*" style="display:none" onchange="ToolkitApp.uploadInputImage(this, '${p.nodeId}', '${p.inputName}')">
+                             <div class="tk-preview-container" id="preview-${p.nodeId}-${p.inputName}" style="min-height: 40px; display:flex; align-items:center; justify-content:center; flex-direction: column;">
+                                ${p.defaultValue ? `<img src="/view?filename=${encodeURIComponent(p.defaultValue)}&type=input" style="max-width:100%; max-height:200px; border-radius:8px; margin-bottom:8px; box-shadow:0 4px 6px rgba(0,0,0,0.2);">` : '<span style="color:var(--tk-zinc-600); font-size: 2rem; margin-bottom: 8px;">🖼️</span>'}
+                             </div>
+                             
+                             <button class="tk-tab-btn" onclick="this.parentElement.querySelector('input[type=file]').click()" style="width:100%; justify-content:center;">
+                                📤 上傳圖片 (Upload)
+                             </button>
+                             <input type="text" class="tk-input tk-form-input" 
+                                data-node="${p.nodeId}" 
+                                data-input="${p.inputName}" 
+                                data-node-class="${p.nodeClass || ''}"
+                                data-type="string"
+                                value="${p.defaultValue || ''}"
+                                style="display:none;">
+                        </div>
+                    </div>
+                `;
+            }
+
             if (isLongText) {
                 return `
             <div class="tk-form-group">
@@ -222,6 +253,7 @@ export const ToolkitUI = {
                                         <textarea class="tk-input tk-form-input" 
                                             data-node="${p.nodeId}" 
                                             data-input="${p.inputName}" 
+                                            data-type="string"
                                             rows="3"
                                             style="resize: vertical; min-height: 80px; overflow-y: hidden; line-height: 1.5; field-sizing: content; white-space: pre-wrap; overflow-wrap: break-word;"
                                             oninput="this.style.height = 'auto'; this.style.height = this.scrollHeight + 'px'"
@@ -247,6 +279,7 @@ export const ToolkitUI = {
                         <input type="number" class="tk-input tk-form-input" 
                             data-node="${p.nodeId}" 
                             data-input="${p.inputName}" 
+                            data-type="number"
                             value="${p.defaultValue}">
                     </div>
     `;
@@ -258,6 +291,7 @@ export const ToolkitUI = {
                                     <input type="text" class="tk-input tk-form-input" 
                                         data-node="${p.nodeId}" 
                                         data-input="${p.inputName}" 
+                                        data-type="${(!isNaN(p.defaultValue) && p.defaultValue !== '') ? 'number' : 'string'}"
                                         value="${p.defaultValue}">
                                 </div>
 `;
