@@ -108,9 +108,14 @@ export const ToolkitApp = {
                 const inputName = input.dataset.input;
                 let value = input.value;
 
-                if (!isNaN(value) && value.trim() !== '') {
-                    if (value.includes('.')) value = parseFloat(value);
-                    else value = parseInt(value);
+                const randomToggle = document.querySelector(`.tk-random-seed-toggle[data-node="${nodeId}"][data-input="${inputName}"]`);
+                if (randomToggle && randomToggle.checked) {
+                    value = Math.floor(Math.random() * 100000000000000);
+                } else {
+                    if (!isNaN(value) && value.trim() !== '') {
+                        if (value.includes('.')) value = parseFloat(value);
+                        else value = parseInt(value);
+                    }
                 }
 
                 if (workflow[nodeId] && workflow[nodeId].inputs) {

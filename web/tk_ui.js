@@ -211,9 +211,13 @@ export const ToolkitUI = {
                 p.displayName.includes('提示詞') ||
                 p.displayName.toLowerCase().includes('prompt');
 
+            const isSeed = p.inputName.toLowerCase() === 'seed' ||
+                p.inputName.toLowerCase() === 'noise_seed' ||
+                p.displayName.includes('Seed');
+
             if (isLongText) {
                 return `
-                                    <div class="tk-form-group">
+            <div class="tk-form-group">
                                         <label class="tk-label">${p.displayName}</label>
                                         <textarea class="tk-input tk-form-input" 
                                             data-node="${p.nodeId}" 
@@ -223,17 +227,40 @@ export const ToolkitUI = {
                                             oninput="this.style.height = 'auto'; this.style.height = this.scrollHeight + 'px'"
                                         >${p.defaultValue}</textarea>
                                     </div>
-                                `;
+    `;
             }
+
+            if (isSeed) {
+                return `
+    <div class="tk-form-group">
+                        <div style="display:flex; justify-content:space-between; align-items:center; padding-right: 4px;">
+                             <label class="tk-label">${p.displayName}</label>
+                             <label class="tk-seed-toggle-label" style="display:flex; align-items:center; gap:4px; transform: scale(0.9); cursor:pointer; opacity: 0.8; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.8'">
+                                <input type="checkbox" class="tk-random-seed-toggle" 
+                                    data-node="${p.nodeId}" 
+                                    data-input="${p.inputName}"
+                                    style="accent-color: var(--tk-emerald-500); width:14px; height:14px;"
+                                    onchange="const input = this.closest('.tk-form-group').querySelector('.tk-form-input'); input.disabled = this.checked; input.style.opacity = this.checked ? '0.5' : '1';">
+                                <span style="font-size:0.75rem; color:var(--tk-zinc-400); font-weight: 500;">🎲 隨機</span>
+                            </label>
+                        </div>
+                        <input type="number" class="tk-input tk-form-input" 
+                            data-node="${p.nodeId}" 
+                            data-input="${p.inputName}" 
+                            value="${p.defaultValue}">
+                    </div>
+    `;
+            }
+
             return `
-                                <div class="tk-form-group">
+    <div class="tk-form-group">
                                     <label class="tk-label">${p.displayName}</label>
                                     <input type="text" class="tk-input tk-form-input" 
                                         data-node="${p.nodeId}" 
                                         data-input="${p.inputName}" 
                                         value="${p.defaultValue}">
                                 </div>
-                            `;
+`;
         }).join('')}
                     </div>
 
