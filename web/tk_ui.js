@@ -189,30 +189,16 @@ export const ToolkitUI = {
     renderUserForm(preset, container) {
         const visibleParams = preset.parameters.filter(p => p.visible);
 
-        container.innerHTML = `
-            <div class="tk-preset-content">
-                <div class="tk-preview-section">
-                    <img src="${preset.previewImageUrl}" class="tk-preview-img" loading="lazy" onerror="this.style.opacity='0.2'">
-                    <div class="tk-preview-badge">
-                        <div class="tk-badge-pulse"></div>
-                        <span class="tk-badge-text">目前預設</span>
-                    </div>
-                </div>
-                
-                <div class="tk-form-container">
-                    <h4 class="tk-form-title">
-                        <span style="color: var(--tk-emerald-500);">▶</span> 參數設定
-                    </h4>
-                    
-                    <div class="tk-form-grid">
-                        ${visibleParams.map(p => {
-            const isLoadImage = p.nodeClass === 'LoadImage' || p.nodeClass === 'LoadImageFromPath';
-
-            const isLongText = p.inputName.toLowerCase().includes('text') ||
+        const isLongTextParam = (p) => {
+            return p.inputName.toLowerCase().includes('text') ||
                 p.inputName.toLowerCase().includes('prompt') ||
                 p.displayName.includes('提示詞') ||
                 p.displayName.toLowerCase().includes('prompt');
+        };
 
+        const renderParamHtml = (p) => {
+            const isLoadImage = p.nodeClass === 'LoadImage' || p.nodeClass === 'LoadImageFromPath';
+            const isLongText = isLongTextParam(p);
             const isSeed = p.inputName.toLowerCase() === 'seed' ||
                 p.inputName.toLowerCase() === 'noise_seed' ||
                 p.displayName.includes('Seed');
@@ -248,23 +234,22 @@ export const ToolkitUI = {
 
             if (isLongText) {
                 return `
-            <div class="tk-form-group">
-                                        <label class="tk-label">${p.displayName}</label>
-                                        <textarea class="tk-input tk-form-input" 
-                                            data-node="${p.nodeId}" 
-                                            data-input="${p.inputName}" 
-                                            data-type="string"
-                                            rows="3"
-                                            style="resize: vertical; min-height: 80px; overflow-y: hidden; line-height: 1.5; field-sizing: content; white-space: pre-wrap; overflow-wrap: break-word;"
-                                            oninput="this.style.height = 'auto'; this.style.height = this.scrollHeight + 'px'"
-                                        >${p.defaultValue}</textarea>
-                                    </div>
-    `;
+                    <div class="tk-form-group" style="height: 100%;">
+                        <label class="tk-label">${p.displayName}</label>
+                        <textarea class="tk-input tk-form-input" 
+                            data-node="${p.nodeId}" 
+                            data-input="${p.inputName}" 
+                            data-type="string"
+                            style="flex: 1; resize: none; min-height: 200px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: break-word; font-family: monospace;"
+                            oninput=""
+                        >${p.defaultValue}</textarea>
+                    </div>
+                `;
             }
 
             if (isSeed) {
                 return `
-    <div class="tk-form-group">
+                    <div class="tk-form-group">
                         <div style="display:flex; justify-content:space-between; align-items:center; padding-right: 4px;">
                              <label class="tk-label">${p.displayName}</label>
                              <label class="tk-seed-toggle-label" style="display:flex; align-items:center; gap:4px; transform: scale(0.9); cursor:pointer; opacity: 0.8; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.8'">
@@ -282,20 +267,51 @@ export const ToolkitUI = {
                             data-type="number"
                             value="${p.defaultValue}">
                     </div>
-    `;
+                `;
             }
 
             return `
-    <div class="tk-form-group">
-                                    <label class="tk-label">${p.displayName}</label>
-                                    <input type="text" class="tk-input tk-form-input" 
-                                        data-node="${p.nodeId}" 
-                                        data-input="${p.inputName}" 
-                                        data-type="${(!isNaN(p.defaultValue) && p.defaultValue !== '') ? 'number' : 'string'}"
-                                        value="${p.defaultValue}">
-                                </div>
-`;
-        }).join('')}
+                <div class="tk-form-group">
+                    <label class="tk-label">${p.displayName}</label>
+                    <input type="text" class="tk-input tk-form-input" 
+                        data-node="${p.nodeId}" 
+                        data-input="${p.inputName}" 
+                        data-type="${(!isNaN(p.defaultValue) && p.defaultValue !== '') ? 'number' : 'string'}"
+                        value="${p.defaultValue}">
+                </div>
+            `;
+        };
+
+        const promptParams = visibleParams.filter(p => isLongTextParam(p));
+        const otherParams = visibleParams.filter(p => !isLongTextParam(p));
+
+        container.innerHTML = `
+            <div class="tk-preset-content">
+                <div class="tk-preview-section">
+                    <img src="${preset.previewImageUrl}" class="tk-preview-img" loading="lazy" onerror="this.style.opacity='0.2'">
+                    <div class="tk-preview-badge">
+                        <div class="tk-badge-pulse"></div>
+                        <span class="tk-badge-text">目前預設</span>
+                    </div>
+                </div>
+                
+                <div class="tk-form-container">
+                    <h4 class="tk-form-title">
+                        <span style="color: var(--tk-emerald-500);">▶</span> 參數設定
+                    </h4>
+                    
+                    <div class="tk-form-split-container">
+                        <!-- Left Column: Prompts -->
+                        <div class="tk-form-left-col">
+                            ${promptParams.length > 0 ? promptParams.map(renderParamHtml).join('') : '<div style="color:var(--tk-zinc-600); font-size:0.8rem; text-align:center; padding:2rem;">無提示詞參數</div>'}
+                        </div>
+
+                        <!-- Right Column: Others -->
+                        <div class="tk-form-right-col">
+                            <div class="tk-form-grid">
+                                ${otherParams.map(renderParamHtml).join('')}
+                            </div>
+                        </div>
                     </div>
 
                     <div class="tk-action-bar">
