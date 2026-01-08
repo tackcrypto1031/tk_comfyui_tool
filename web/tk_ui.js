@@ -7,7 +7,7 @@ export const ToolkitUI = {
         if (this.isOpen) return;
         this.createModal();
         this.isOpen = true;
-        this.switchTab('t2i');
+        this.switchTab('image');
     },
 
     close() {
@@ -25,13 +25,13 @@ export const ToolkitUI = {
                 <header class="tk-header">
                     <div class="tk-logo-area">
                         <span style="font-size: 1.5rem;">🍌</span>
-                        <span class="tk-logo-text">TK Toolkit Pro</span>
+                        <span class="tk-logo-text">塔克小工具</span>
                     </div>
                     
-                    <nav class="tk-tabs">
-                        <button class="tk-tab-btn" data-tab="t2i">🖼️ 文生圖</button>
-                        <button class="tk-tab-btn" data-tab="i2i">🎨 圖生圖</button>
-                        <button class="tk-tab-btn" data-tab="edit">🔨 圖片編輯</button>
+                        <button class="tk-tab-btn" data-tab="image">🖼️ 圖片</button>
+                        <button class="tk-tab-btn" data-tab="video">🎥 影片</button>
+                        <button class="tk-tab-btn" data-tab="reverse">🔍 反推</button>
+                        <button class="tk-tab-btn" data-tab="gallery">📂 我的作品</button>
                         <button class="tk-tab-btn" data-tab="admin" style="margin-left:8px;">⚙️ 管理員</button>
                     </nav>
                     
@@ -48,6 +48,17 @@ export const ToolkitUI = {
                         <h3 class="tk-sidebar-label">常用項目</h3>
                         <div id="tk-sidebar-list" class="tk-sidebar-list">
                             <!-- Presets list will be injected here -->
+                        </div>
+                        
+                        <div id="tk-progress-area" class="tk-progress-container tk-hidden">
+                            <div class="tk-progress-label">
+                                <span id="tk-progress-title">Generating...</span>
+                                <span id="tk-progress-percent">0%</span>
+                            </div>
+                            <div class="tk-progress-bar">
+                                <div id="tk-progress-fill" class="tk-progress-fill"></div>
+                            </div>
+                            <div id="tk-queue-count" class="tk-queue-info">Waiting: 0</div>
                         </div>
                     </aside>
                     
@@ -91,7 +102,12 @@ export const ToolkitUI = {
 
         if (tabName === 'admin') {
             sidebar.classList.add('tk-hidden');
+            delete sidebar.dataset.category;
             ToolkitApp.renderAdminPanel(mainPanel);
+        } else if (tabName === 'gallery') {
+            sidebar.classList.add('tk-hidden');
+            delete sidebar.dataset.category;
+            ToolkitApp.renderGallery(mainPanel);
         } else {
             sidebar.classList.remove('tk-hidden');
             // Show loading if cache is empty or it's a new category
@@ -142,41 +158,206 @@ export const ToolkitUI = {
             return;
         }
 
-        presets.forEach((p, index) => {
-            const card = document.createElement('div');
-            card.className = 'tk-preset-card';
-            card.innerHTML = `
-                <img src="${p.previewImageUrl || ''}" class="tk-preset-thumb" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2248%22 height=%2248%22><rect width=%2248%22 height=%2248%22 fill=%22%2318181b%22/><text x=%2250%%22 y=%2250%%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 fill=%22%233f3f46%22 font-size=%2220%22>?</text></svg>'">
-                <div class="tk-preset-info">
-                    <span class="tk-preset-name">${p.name}</span>
-                    <span class="tk-preset-meta">工作流已就緒</span>
-                </div>
-                <span style="color: #3f3f46; font-size: 0.75rem;">➔</span>
-            `;
+        // --- GROUPING LOGIC ---
+        // Define Display Names for Sub-Categories
+        const subCatNames = {
+            't2i': '文生圖',
+            'i2i': '圖生圖',
+            'edit': '圖片編輯',
+            't2v': '文生影片',
+            'i2v': '圖生影片',
+            'v2v': '影片生影片',
+            'rev_image': '圖片反推',
+            'rev_video': '影片反推'
+        };
 
-            const selectPreset = () => {
-                sidebarList.querySelectorAll('.tk-preset-card').forEach(c => c.classList.remove('active'));
-                card.classList.add('active');
-                this.renderUserForm(p, mainPanel);
-            };
+        // If we are searching, we might just show a flat list OR still grouped. 
+        // Let's stick to grouped for consistency.
 
-            card.onclick = selectPreset;
-            sidebarList.appendChild(card);
+        // We know the current active tab from sidebar.dataset.category usually, 
+        // but here we just group based on what we have in `presets`.
 
-            // Auto-select the first one if it's the first render and not searching
-            if (index === 0) {
-                selectPreset();
+        // 1. Group items
+        const groups = {};
+        const orderMap = ['t2i', 'i2i', 'edit', 't2v', 'i2v', 'v2v', 'rev_image', 'rev_video']; // Order of appearance
+
+        presets.forEach(p => {
+            const cat = p.category;
+            if (!groups[cat]) groups[cat] = [];
+            groups[cat].push(p);
+        });
+
+        let hasAnyItem = false;
+
+        // 2. Render Groups
+        orderMap.forEach(catKey => {
+            if (groups[catKey] && groups[catKey].length > 0) {
+                hasAnyItem = true;
+
+                // Render Header
+                const header = document.createElement('div');
+                header.className = 'tk-sidebar-group-header';
+                header.style.cssText = "color: var(--tk-zinc-500); font-size: 0.75rem; font-weight: 600; padding: 12px 0 4px 4px; text-transform: uppercase; letter-spacing: 0.05em;";
+                header.textContent = subCatNames[catKey] || catKey;
+                sidebarList.appendChild(header);
+
+                // Render Items
+                groups[catKey].forEach(p => {
+                    const card = document.createElement('div');
+                    card.className = 'tk-preset-card';
+
+                    // Banana Fallback Logic
+                    let imgHtml = '';
+                    if (p.previewImageUrl) {
+                        imgHtml = `<img src="${p.previewImageUrl}" class="tk-preset-thumb" loading="lazy" onerror="this.parentElement.innerHTML='<div class=\\'tk-preset-thumb\\' style=\\'display:flex;align-items:center;justify-content:center;font-size:1.5rem;background:#18181b;\\'>🍌</div>'">`;
+                    } else {
+                        imgHtml = `<div class="tk-preset-thumb" style="display:flex;align-items:center;justify-content:center;font-size:1.5rem;background:#18181b;">🍌</div>`;
+                    }
+
+                    card.innerHTML = `
+                        ${imgHtml}
+                        <div class="tk-preset-info">
+                            <span class="tk-preset-name">${p.name}</span>
+                            <span class="tk-preset-meta">工作流已就緒</span>
+                        </div>
+                        <span style="color: #3f3f46; font-size: 0.75rem;">➔</span>
+                    `;
+
+                    const selectPreset = () => {
+                        sidebarList.querySelectorAll('.tk-preset-card').forEach(c => c.classList.remove('active'));
+                        card.classList.add('active');
+                        this.renderUserForm(p, mainPanel);
+                    };
+
+                    card.onclick = selectPreset;
+                    sidebarList.appendChild(card);
+                });
             }
         });
+
+        // 3. Handle specific case: If presets exist but don't match the orderMap (unlikely given filters but possible for 'others')
+        // We can check for any 'other' categories if needed, but for now strict grouping is requested.
+
+        // Auto-select first item
+        const firstCard = sidebarList.querySelector('.tk-preset-card');
+        if (firstCard) {
+            firstCard.click();
+        }
     },
 
     renderUserForm(preset, container) {
+        // 1. Recover State
+        const savedState = ToolkitApp.getPresetState(preset.id);
+        const inputsState = savedState ? savedState.inputs : {};
+
         const visibleParams = preset.parameters.filter(p => p.visible);
+
+        const isLongTextParam = (p) => {
+            return p.inputName.toLowerCase().includes('text') ||
+                p.inputName.toLowerCase().includes('prompt') ||
+                p.displayName.includes('提示詞') ||
+                p.displayName.toLowerCase().includes('prompt');
+        };
+
+        const renderParamHtml = (p) => {
+            const isLoadImage = p.nodeClass === 'LoadImage' || p.nodeClass === 'LoadImageFromPath';
+            const isLongText = isLongTextParam(p);
+            const isSeed = p.inputName.toLowerCase() === 'seed' ||
+                p.inputName.toLowerCase() === 'noise_seed' ||
+                p.displayName.includes('Seed');
+
+            if (isLoadImage) {
+                return `
+                    <div class="tk-form-group">
+                        <label class="tk-label">${p.displayName}</label>
+                        <div class="tk-image-upload-area" 
+                             style="background:var(--tk-zinc-900); border:1px dashed var(--tk-border); border-radius:8px; padding:12px; text-align:center; transition: all 0.2s;"
+                             ondragover="ToolkitApp.handleDragOver(event)"
+                             ondragleave="ToolkitApp.handleDragLeave(event)"
+                             ondrop="ToolkitApp.handleDrop(event, '${p.nodeId}', '${p.inputName}')">
+                             <input type="file" accept="image/*" style="display:none" onchange="ToolkitApp.uploadInputImage(this, '${p.nodeId}', '${p.inputName}')">
+                             <div class="tk-preview-container" id="preview-${p.nodeId}-${p.inputName}" style="min-height: 40px; display:flex; align-items:center; justify-content:center; flex-direction: column;">
+                                ${p.defaultValue ? `<img src="/view?filename=${encodeURIComponent(p.defaultValue)}&type=input" style="max-width:100%; max-height:200px; border-radius:8px; margin-bottom:8px; box-shadow:0 4px 6px rgba(0,0,0,0.2);">` : '<span style="color:var(--tk-zinc-600); font-size: 2rem; margin-bottom: 8px;">🖼️</span>'}
+                             </div>
+                             
+                             <button class="tk-tab-btn" onclick="this.parentElement.querySelector('input[type=file]').click()" style="width:100%; justify-content:center;">
+                                📤 上傳圖片 (Upload)
+                             </button>
+                             <input type="text" class="tk-input tk-form-input" 
+                                data-node="${p.nodeId}" 
+                                data-input="${p.inputName}" 
+                                data-node-class="${p.nodeClass || ''}"
+                                data-type="string"
+                                value="${inputsState[p.nodeId + '_' + p.inputName] !== undefined ? inputsState[p.nodeId + '_' + p.inputName] : (p.defaultValue || '')}"
+                                style="display:none;"
+                                onchange="ToolkitApp.savePresetState('${preset.id}', { inputs: { ['${p.nodeId}_${p.inputName}']: this.value } })">
+                        </div>
+                    </div>
+                `;
+            }
+
+            if (isLongText) {
+                return `
+                    <div class="tk-form-group" style="height: 100%;">
+                        <label class="tk-label">${p.displayName}</label>
+                        <textarea class="tk-input tk-form-input" 
+                            data-node="${p.nodeId}" 
+                            data-input="${p.inputName}" 
+                            data-type="string"
+                            style="flex: 1; resize: none; min-height: 200px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: break-word; font-family: monospace;"
+                            oninput="ToolkitApp.savePresetState('${preset.id}', { inputs: { ['${p.nodeId}_${p.inputName}']: this.value } })"
+                        >${inputsState[p.nodeId + '_' + p.inputName] !== undefined ? inputsState[p.nodeId + '_' + p.inputName] : p.defaultValue}</textarea>
+                    </div>
+                `;
+            }
+
+            if (isSeed) {
+                return `
+                    <div class="tk-form-group">
+                        <div style="display:flex; justify-content:space-between; align-items:center; padding-right: 4px;">
+                             <label class="tk-label">${p.displayName}</label>
+                             <label class="tk-seed-toggle-label" style="display:flex; align-items:center; gap:4px; transform: scale(0.9); cursor:pointer; opacity: 0.8; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.8'">
+                                <input type="checkbox" class="tk-random-seed-toggle" 
+                                    data-node="${p.nodeId}" 
+                                    data-input="${p.inputName}"
+                                    style="accent-color: var(--tk-emerald-500); width:14px; height:14px;"
+                                    onchange="const input = this.closest('.tk-form-group').querySelector('.tk-form-input'); input.disabled = this.checked; input.style.opacity = this.checked ? '0.5' : '1';">
+                                <span style="font-size:0.75rem; color:var(--tk-zinc-400); font-weight: 500;">🎲 隨機</span>
+                            </label>
+                        </div>
+                        <input type="number" class="tk-input tk-form-input" 
+                            data-node="${p.nodeId}" 
+                            data-input="${p.inputName}" 
+                            data-type="number"
+                            value="${inputsState[p.nodeId + '_' + p.inputName] !== undefined ? inputsState[p.nodeId + '_' + p.inputName] : p.defaultValue}"
+                            onchange="ToolkitApp.savePresetState('${preset.id}', { inputs: { ['${p.nodeId}_${p.inputName}']: this.value } })">
+                    </div>
+                `;
+            }
+
+            return `
+                <div class="tk-form-group">
+                    <label class="tk-label">${p.displayName}</label>
+                    <input type="text" class="tk-input tk-form-input" 
+                        data-node="${p.nodeId}" 
+                        data-input="${p.inputName}" 
+                        data-type="${(!isNaN(p.defaultValue) && p.defaultValue !== '') ? 'number' : 'string'}"
+                        value="${inputsState[p.nodeId + '_' + p.inputName] !== undefined ? inputsState[p.nodeId + '_' + p.inputName] : p.defaultValue}"
+                        onchange="ToolkitApp.savePresetState('${preset.id}', { inputs: { ['${p.nodeId}_${p.inputName}']: this.value } })">
+                </div>
+            `;
+        };
+
+        const promptParams = visibleParams.filter(p => isLongTextParam(p));
+        const otherParams = visibleParams.filter(p => !isLongTextParam(p));
 
         container.innerHTML = `
             <div class="tk-preset-content">
                 <div class="tk-preview-section">
-                    <img src="${preset.previewImageUrl}" class="tk-preview-img" loading="lazy" onerror="this.style.opacity='0.2'">
+                    ${preset.previewImageUrl ?
+                `<img src="${preset.previewImageUrl}" class="tk-preview-img" loading="lazy" onerror="this.outerHTML='<div class=\\'tk-preview-img\\' style=\\'display:flex;align-items:center;justify-content:center;font-size:5rem;background:#18181b;color:var(--tk-zinc-700);\\'>🍌</div>'">`
+                : `<div class="tk-preview-img" style="display:flex;align-items:center;justify-content:center;font-size:5rem;background:#18181b;color:var(--tk-zinc-700);">🍌</div>`
+            }
                     <div class="tk-preview-badge">
                         <div class="tk-badge-pulse"></div>
                         <span class="tk-badge-text">目前預設</span>
@@ -188,16 +369,20 @@ export const ToolkitUI = {
                         <span style="color: var(--tk-emerald-500);">▶</span> 參數設定
                     </h4>
                     
-                    <div class="tk-form-grid">
-                        ${visibleParams.map(p => `
-                            <div class="tk-form-group">
-                                <label class="tk-label">${p.displayName}</label>
-                                <input type="text" class="tk-input tk-form-input" 
-                                    data-node="${p.nodeId}" 
-                                    data-input="${p.inputName}" 
-                                    value="${p.defaultValue}">
+                    <div class="tk-form-split-container">
+                        <!-- Left Column: Prompts -->
+                        ${promptParams.length > 0 ? `
+                        <div class="tk-form-left-col">
+                            ${promptParams.map(renderParamHtml).join('')}
+                        </div>
+                        ` : ''}
+
+                        <!-- Right Column: Others -->
+                        <div class="tk-form-right-col">
+                            <div class="tk-form-grid">
+                                ${otherParams.map(renderParamHtml).join('')}
                             </div>
-                        `).join('')}
+                        </div>
                     </div>
 
                     <div class="tk-action-bar">
@@ -206,7 +391,7 @@ export const ToolkitUI = {
                         </div>
                         <button class="tk-generate-btn" id="tk-generate-btn">
                              <span style="font-size: 1.2rem;">⚡</span>
-                             生成圖片 (Generate)
+                             生成 (Generate)
                         </button>
                     </div>
                 </div>
@@ -216,5 +401,60 @@ export const ToolkitUI = {
         container.querySelector('#tk-generate-btn').onclick = () => {
             ToolkitApp.executeWorkflow(preset);
         };
+
+        // Restore Preview if exists
+        if (savedState && savedState.preview) {
+            this.updatePreview(savedState.preview.type, savedState.preview.content);
+        }
+    },
+
+    updatePreview(type, content) {
+        const previewSection = document.querySelector('.tk-preview-section');
+        if (!previewSection) return;
+
+        if (type === 'image') {
+            previewSection.innerHTML = `
+                <img src="${content}" class="tk-preview-img" style="cursor:pointer;" onclick="ToolkitApp.openImageModal('${content}')">
+                <div class="tk-preview-badge" style="background: rgba(16, 185, 129, 0.9);">
+                    <span class="tk-badge-text">✨ 生成結果</span>
+                </div>
+            `;
+        } else if (type === 'text') {
+            // Text Preview
+            previewSection.innerHTML = `
+                 <div style="width:100%; height:100%; background:#18181b; padding:2rem; overflow-y:auto; font-size:0.95rem; color:#e4e4e7; white-space:pre-wrap; font-family:monospace; position:relative; display:flex; align-items:center; justify-content:center; text-align:center;">
+                    <div style="max-width: 90%; text-align: left;">${content}</div>
+                 </div>
+                 <button class="tk-copy-btn" title="複製文字" style="
+                    position:absolute; top:12px; right:12px; 
+                    background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.2); 
+                    color:#fff; padding:6px 12px; border-radius:6px; cursor:pointer; font-size:13px;
+                    display:flex; align-items:center; gap:6px; backdrop-filter:blur(4px); transition: all 0.2s;
+                    z-index: 10;
+                 ">
+                    📋 複製提示詞
+                 </button>
+                 <div class="tk-preview-badge" style="background: rgba(16, 185, 129, 0.9);">
+                    <span class="tk-badge-text">📝 生成文字</span>
+                </div>
+            `;
+
+            // Add copy functionality
+            const copyBtn = previewSection.querySelector('.tk-copy-btn');
+            if (copyBtn) {
+                copyBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    navigator.clipboard.writeText(content).then(() => {
+                        const originalText = copyBtn.innerHTML;
+                        copyBtn.innerHTML = '✅ 已複製';
+                        copyBtn.style.background = 'rgba(16, 185, 129, 0.3)';
+                        setTimeout(() => {
+                            copyBtn.innerHTML = originalText;
+                            copyBtn.style.background = 'rgba(255,255,255,0.1)';
+                        }, 2000);
+                    });
+                };
+            }
+        }
     }
 };

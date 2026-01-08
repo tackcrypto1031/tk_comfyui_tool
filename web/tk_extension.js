@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { ToolkitUI } from "./tk_ui.js";
+import { ToolkitApp } from "./tk_app.js";
 
 console.log("🍌 Toolkit Extension: Loading...");
 
@@ -22,6 +23,7 @@ app.registerExtension({
         floatBtn.title = "Open Toolkit";
 
         floatBtn.onclick = () => {
+            ToolkitApp.init();
             ToolkitUI.open();
         };
 
