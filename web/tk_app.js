@@ -3,9 +3,10 @@ import { ToolkitUI } from "./tk_ui.js";
 
 export const ToolkitApp = {
     // --- CACHE ---
-    presetsCache: null,
     historyCache: null,
     isListening: false,
+    currentPromptId: null,
+    stateCache: {}, // Stores inputs and preview per preset ID
 
     init() {
         if (this.isListening) return;
@@ -42,11 +43,53 @@ export const ToolkitApp = {
         }
     },
 
-    onExecuted(e) {
+    async onExecuted(e) {
         // Refresh gallery if open
         const gallery = document.getElementById('tk-gallery-container');
         if (gallery) {
             this.renderGallery(gallery.parentElement); // Re-render
+        }
+
+        // Handle Preview Update (Image or Text)
+        if (this.currentPromptId && e.detail.prompt_id === this.currentPromptId) {
+            try {
+                const hRes = await api.fetchApi('/history/' + this.currentPromptId);
+                if (hRes.ok) {
+                    const hData = await hRes.json();
+                    const data = hData[this.currentPromptId];
+                    if (data && data.outputs) {
+                        let foundImage = null;
+                        let foundText = null;
+
+                        for (const nodeId in data.outputs) {
+                            const out = data.outputs[nodeId];
+                            // Check for Images
+                            if (out.images && out.images.length > 0) {
+                                const img = out.images[0];
+                                foundImage = `/view?filename=${img.filename}&subfolder=${img.subfolder}&type=${img.type}`;
+                                break; // Prioritize image
+                            }
+                            // Check for Text (common keys: text, string, value)
+                            if (!foundImage && (out.text || out.string || out.value)) {
+                                foundText = out.text || out.string || out.value;
+                                if (Array.isArray(foundText)) foundText = foundText.join('\n');
+                            }
+                        }
+
+                        if (foundImage) {
+                            ToolkitUI.updatePreview('image', foundImage);
+                            this.savePresetState(this.currentPresetId, { preview: { type: 'image', content: foundImage } });
+                        } else if (foundText) {
+                            ToolkitUI.updatePreview('text', foundText);
+                            this.savePresetState(this.currentPresetId, { preview: { type: 'text', content: foundText } });
+                        }
+                    }
+                }
+            } catch (err) {
+                console.error("Failed to fetch execution result for preview", err);
+            }
+            this.currentPromptId = null; // Reset
+            this.currentPresetId = null; // Reset
         }
 
         // Hide progress if done
@@ -55,7 +98,9 @@ export const ToolkitApp = {
             document.getElementById('tk-progress-percent').innerText = '100%';
             document.getElementById('tk-progress-fill').style.width = '100%';
             setTimeout(() => {
-                if (document.getElementById('tk-queue-count').innerText === 'Waiting: 0') {
+                // Only hide if queue is empty
+                const queueElem = document.getElementById('tk-queue-count');
+                if (queueElem && (queueElem.innerText === 'Waiting: 0' || queueElem.innerText === '')) {
                     bar.classList.add('tk-hidden');
                 }
                 document.getElementById('tk-progress-fill').style.width = '0%';
@@ -181,7 +226,7 @@ export const ToolkitApp = {
             console.log("🚀 Executing Workflow:", workflow);
 
             // Check for output nodes
-            const outputTypes = ['SaveImage', 'PreviewImage'];
+            const outputTypes = ['SaveImage', 'PreviewImage', 'ShowText', 'ShowText|pysssss', 'TK_ShowText'];
             const outputNodes = [];
             for (const nodeId in workflow) {
                 const node = workflow[nodeId];
@@ -236,11 +281,15 @@ export const ToolkitApp = {
                     });
                 } catch (err) { console.error("Failed to save history", err); }
 
+                // Set current prompt ID for onExecuted listener
+                this.currentPromptId = resData.prompt_id;
+                this.currentPresetId = preset.id; // Track which preset started this
+
                 statusMsg.innerHTML = `✅ 已成功加入隊列！<br><span style="font-size:0.8em; color:var(--tk-emerald-400); cursor:pointer; text-decoration:underline;" onclick="document.querySelector('[data-tab=gallery]').click()">👉 前往「我的作品」查看進度</span>`;
 
                 setTimeout(() => {
                     btn.disabled = false;
-                    btn.innerHTML = '<span style="font-size: 1.2rem;">⚡</span> 生成圖片 (Generate)';
+                    btn.innerHTML = '<span style="font-size: 1.2rem;">⚡</span> 生成 (Generate)';
                     statusContainer.classList.add('tk-hidden');
                 }, 4000);
 
@@ -285,24 +334,36 @@ export const ToolkitApp = {
             const res = await api.fetchApi('/tk/history');
             const history = await res.json();
 
-            // Process history to get images
+            // Process history to get images or text
             const items = await Promise.all(history.map(async (item) => {
                 // If we don't have an image url recorded, try to find it from Comfy API
                 // Note: Ideally we store the image path when 'executed' event fires, but for now we fetch it
-                if (!item.image_url) {
+                if (!item.image_url && !item.text_content) {
                     try {
                         const hRes = await api.fetchApi('/history/' + item.prompt_id);
                         if (hRes.ok) {
                             const hData = await hRes.json();
                             const data = hData[item.prompt_id];
                             if (data && data.outputs) {
-                                // Find first image
+                                // 1. Try to find Image
                                 for (const nodeId in data.outputs) {
-                                    const images = data.outputs[nodeId].images;
-                                    if (images && images.length > 0) {
-                                        const img = images[0];
+                                    const out = data.outputs[nodeId];
+                                    if (out.images && out.images.length > 0) {
+                                        const img = out.images[0];
                                         item.image_url = `/view?filename=${img.filename}&subfolder=${img.subfolder}&type=${img.type}`;
                                         break;
+                                    }
+                                }
+                                // 2. If no image, try to find Text
+                                if (!item.image_url) {
+                                    for (const nodeId in data.outputs) {
+                                        const out = data.outputs[nodeId];
+                                        if (out.text || out.string || out.value) {
+                                            let txt = out.text || out.string || out.value;
+                                            if (Array.isArray(txt)) txt = txt.join('\n');
+                                            item.text_content = txt;
+                                            break;
+                                        }
                                     }
                                 }
                             }
@@ -330,47 +391,56 @@ export const ToolkitApp = {
 
                 const date = new Date(item.timestamp).toLocaleString();
 
-                // Changed click handler to openImageModal
-                const imgHtml = item.image_url
-                    ? `<img src="${item.image_url}" class="tk-gallery-img" style="cursor:pointer;" onclick="ToolkitApp.openImageModal('${item.image_url}')">`
-                    : `<div class="tk-gallery-img" style="display:flex;align-items:center;justify-content:center;color:var(--tk-zinc-600);font-size:2rem;">⏳</div>`;
+                // Changed click handler to openImageModal or openTextModal
+                let contentHtml = '';
 
-                // Add "Make Same Style" button (Yellow button at bottom right)
-                // Using inline styles to match the request quickly
-                const makeSameStyleBtn = item.image_url ? `
-                    <button class="tk-make-same-style-btn" 
-                            title="做同款 (Make Same Style)"
-                            onclick="ToolkitApp.loadHistorySettings('${item.id}')"
-                            style="
-                                position: absolute;
-                                bottom: 44px; 
-                                right: 8px;
-                                width: 32px;
-                                height: 32px;
-                                border-radius: 50%;
-                                background: var(--tk-amber-500, #f59e0b);
-                                border: 2px solid #18181b;
-                                color: #000;
-                                display: flex;
-                                align-items: center;
-                                justify-content: center;
-                                cursor: pointer;
-                                box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5);
-                                transition: transform 0.1s;
-                                z-index: 10;
-                            "
-                            onmouseover="this.style.transform='scale(1.1)'"
-                            onmouseout="this.style.transform='scale(1)'"
-                    >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
-                        </svg>
-                    </button>
-                ` : '';
+                if (item.image_url) {
+                    contentHtml = `<img src="${item.image_url}" class="tk-gallery-img" style="cursor:pointer;" onclick="ToolkitApp.openImageModal('${item.image_url}')">`;
+                } else if (item.text_content) {
+                    const safeText = encodeURIComponent(item.text_content);
+                    contentHtml = `
+                        <div class="tk-gallery-img" 
+                             style="display:flex; flex-direction:column; align-items:center; justify-content:center; color:var(--tk-zinc-400); font-size:0.8rem; background:rgba(255,255,255,0.02); cursor:pointer; padding:12px; text-align:center;"
+                             onclick="ToolkitApp.openTextModal(decodeURIComponent('${safeText}'))">
+                             <span style="font-size:2rem; margin-bottom:4px;">📝</span>
+                             <span style="overflow:hidden; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; text-overflow:ellipsis; width:100%;">${item.text_content.substring(0, 50)}...</span>
+                        </div>
+                    `;
+                } else {
+                    contentHtml = `<div class="tk-gallery-img" style="display:flex;align-items:center;justify-content:center;color:var(--tk-zinc-600);font-size:2rem;">⏳</div>`;
+                }
+
+                // Button Logic: "Make Same Style" for Images OR "Copy Prompt" for Text
+                let actionBtn = '';
+                if (item.image_url) {
+                    actionBtn = `
+                        <button class="tk-make-same-style-btn" 
+                                title="做同款 (Make Same Style)"
+                                onclick="ToolkitApp.loadHistorySettings('${item.id}')"
+                                style="position: absolute; bottom: 44px; right: 8px; width: 32px; height: 32px; border-radius: 50%; background: var(--tk-amber-500, #f59e0b); border: 2px solid #18181b; color: #000; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5); transition: transform 0.1s; z-index: 10;"
+                                onmouseover="this.style.transform='scale(1.1)'"
+                                onmouseout="this.style.transform='scale(1)'"
+                        >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
+                        </button>`;
+                } else if (item.text_content) {
+                    // For text, we use a Copy button
+                    const safeTextForCopy = encodeURIComponent(item.text_content);
+                    actionBtn = `
+                        <button class="tk-copy-history-btn" 
+                                title="複製提示詞 (Copy Prompt)"
+                                onclick="ToolkitApp.copyText('${safeTextForCopy}', this)"
+                                style="position: absolute; bottom: 44px; right: 8px; width: 32px; height: 32px; border-radius: 50%; background: var(--tk-emerald-500, #10b981); border: 2px solid #18181b; color: #000; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5); transition: transform 0.1s; z-index: 10;"
+                                onmouseover="this.style.transform='scale(1.1)'"
+                                onmouseout="this.style.transform='scale(1)'"
+                        >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                        </button>`;
+                }
 
                 card.innerHTML = `
-                    ${imgHtml}
-                    ${makeSameStyleBtn}
+                    ${contentHtml}
+                    ${actionBtn}
                     <div class="tk-gallery-meta">
                         <span class="tk-gallery-tag">${item.preset_name || 'Unknown'}</span>
                         <div style="color:var(--tk-zinc-500); font-size:0.65rem;">${date}</div>
@@ -383,6 +453,82 @@ export const ToolkitApp = {
             console.error(e);
             container.innerHTML = `<div style="color:red;">載入失敗: ${e.message}</div>`;
         }
+    },
+
+    openImageModal(imageUrl) {
+        const modal = document.createElement('div');
+        modal.style.cssText = `
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9); z-index: 10000;
+            display: flex; align-items: center; justify-content: center;
+            cursor: zoom-out; animation: tk-fade-in 0.2s;
+        `;
+        modal.innerHTML = `
+            <img src="${imageUrl}" style="max-width:95%; max-height:95%; object-fit:contain; box-shadow:0 0 20px rgba(0,0,0,0.5); border-radius:4px;">
+        `;
+        modal.onclick = () => modal.remove();
+        document.body.appendChild(modal);
+    },
+
+    openTextModal(text) {
+        const modal = document.createElement('div');
+        modal.style.cssText = `
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.8); z-index: 10000;
+            display: flex; align-items: center; justify-content: center;
+            animation: tk-fade-in 0.2s;
+        `;
+        modal.innerHTML = `
+            <div style="background:#18181b; border:1px solid var(--tk-border); border-radius:12px; width:80%; max-width:600px; max-height:80vh; display:flex; flex-direction:column; box-shadow:0 20px 25px -5px rgba(0, 0, 0, 0.5);">
+                <div style="padding:1rem; border-bottom:1px solid var(--tk-border); display:flex; justify-content:space-between; align-items:center;">
+                    <h3 style="margin:0; font-size:1.1rem; color:var(--tk-zinc-100);">完整提示詞</h3>
+                    <button class="tk-close-modal-btn" style="background:none; border:none; color:var(--tk-zinc-400); cursor:pointer;">✕</button>
+                </div>
+                <div style="padding:1.5rem; overflow-y:auto; color:var(--tk-zinc-300); white-space:pre-wrap; font-family:monospace; line-height:1.6;">${text}</div>
+                <div style="padding:1rem; border-top:1px solid var(--tk-border); display:flex; justify-content:flex-end;">
+                     <button class="tk-generate-btn" style="min-width:auto; padding:8px 16px;" onclick="navigator.clipboard.writeText(decodeURIComponent('${encodeURIComponent(text)}')).then(() => alert('已複製！'))">
+                        📋 複製內容
+                     </button>
+                </div>
+            </div>
+        `;
+
+        modal.querySelector('.tk-close-modal-btn').onclick = () => modal.remove();
+        modal.onclick = (e) => {
+            if (e.target === modal) modal.remove();
+        };
+        document.body.appendChild(modal);
+    },
+
+    copyText(encodedText, btn) {
+        const text = decodeURIComponent(encodedText);
+        navigator.clipboard.writeText(text).then(() => {
+            const originalHTML = btn.innerHTML;
+            const originalBg = btn.style.background;
+            btn.innerHTML = '✅';
+            btn.style.background = '#059669'; // darker emerald
+            setTimeout(() => {
+                btn.innerHTML = originalHTML;
+                btn.style.background = originalBg;
+            }, 1000);
+        });
+    },
+
+    // --- STATE MANAGEMENT ---
+    savePresetState(presetId, partialState) {
+        if (!this.stateCache[presetId]) {
+            this.stateCache[presetId] = { inputs: {}, preview: null };
+        }
+        if (partialState.inputs) {
+            this.stateCache[presetId].inputs = { ...this.stateCache[presetId].inputs, ...partialState.inputs };
+        }
+        if (partialState.preview) {
+            this.stateCache[presetId].preview = partialState.preview;
+        }
+    },
+
+    getPresetState(presetId) {
+        return this.stateCache[presetId];
     },
 
     // --- ADMIN MODE ---

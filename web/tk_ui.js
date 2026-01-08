@@ -187,6 +187,10 @@ export const ToolkitUI = {
     },
 
     renderUserForm(preset, container) {
+        // 1. Recover State
+        const savedState = ToolkitApp.getPresetState(preset.id);
+        const inputsState = savedState ? savedState.inputs : {};
+
         const visibleParams = preset.parameters.filter(p => p.visible);
 
         const isLongTextParam = (p) => {
@@ -225,8 +229,9 @@ export const ToolkitUI = {
                                 data-input="${p.inputName}" 
                                 data-node-class="${p.nodeClass || ''}"
                                 data-type="string"
-                                value="${p.defaultValue || ''}"
-                                style="display:none;">
+                                value="${inputsState[p.nodeId + '_' + p.inputName] !== undefined ? inputsState[p.nodeId + '_' + p.inputName] : (p.defaultValue || '')}"
+                                style="display:none;"
+                                onchange="ToolkitApp.savePresetState('${preset.id}', { inputs: { ['${p.nodeId}_${p.inputName}']: this.value } })">
                         </div>
                     </div>
                 `;
@@ -241,8 +246,8 @@ export const ToolkitUI = {
                             data-input="${p.inputName}" 
                             data-type="string"
                             style="flex: 1; resize: none; min-height: 200px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: break-word; font-family: monospace;"
-                            oninput=""
-                        >${p.defaultValue}</textarea>
+                            oninput="ToolkitApp.savePresetState('${preset.id}', { inputs: { ['${p.nodeId}_${p.inputName}']: this.value } })"
+                        >${inputsState[p.nodeId + '_' + p.inputName] !== undefined ? inputsState[p.nodeId + '_' + p.inputName] : p.defaultValue}</textarea>
                     </div>
                 `;
             }
@@ -265,7 +270,8 @@ export const ToolkitUI = {
                             data-node="${p.nodeId}" 
                             data-input="${p.inputName}" 
                             data-type="number"
-                            value="${p.defaultValue}">
+                            value="${inputsState[p.nodeId + '_' + p.inputName] !== undefined ? inputsState[p.nodeId + '_' + p.inputName] : p.defaultValue}"
+                            onchange="ToolkitApp.savePresetState('${preset.id}', { inputs: { ['${p.nodeId}_${p.inputName}']: this.value } })">
                     </div>
                 `;
             }
@@ -277,7 +283,8 @@ export const ToolkitUI = {
                         data-node="${p.nodeId}" 
                         data-input="${p.inputName}" 
                         data-type="${(!isNaN(p.defaultValue) && p.defaultValue !== '') ? 'number' : 'string'}"
-                        value="${p.defaultValue}">
+                        value="${inputsState[p.nodeId + '_' + p.inputName] !== undefined ? inputsState[p.nodeId + '_' + p.inputName] : p.defaultValue}"
+                        onchange="ToolkitApp.savePresetState('${preset.id}', { inputs: { ['${p.nodeId}_${p.inputName}']: this.value } })">
                 </div>
             `;
         };
@@ -320,7 +327,7 @@ export const ToolkitUI = {
                         </div>
                         <button class="tk-generate-btn" id="tk-generate-btn">
                              <span style="font-size: 1.2rem;">⚡</span>
-                             生成圖片 (Generate)
+                             生成 (Generate)
                         </button>
                     </div>
                 </div>
@@ -330,5 +337,60 @@ export const ToolkitUI = {
         container.querySelector('#tk-generate-btn').onclick = () => {
             ToolkitApp.executeWorkflow(preset);
         };
+
+        // Restore Preview if exists
+        if (savedState && savedState.preview) {
+            this.updatePreview(savedState.preview.type, savedState.preview.content);
+        }
+    },
+
+    updatePreview(type, content) {
+        const previewSection = document.querySelector('.tk-preview-section');
+        if (!previewSection) return;
+
+        if (type === 'image') {
+            previewSection.innerHTML = `
+                <img src="${content}" class="tk-preview-img" style="cursor:pointer;" onclick="ToolkitApp.openImageModal('${content}')">
+                <div class="tk-preview-badge" style="background: rgba(16, 185, 129, 0.9);">
+                    <span class="tk-badge-text">✨ 生成結果</span>
+                </div>
+            `;
+        } else if (type === 'text') {
+            // Text Preview
+            previewSection.innerHTML = `
+                 <div style="width:100%; height:100%; background:#18181b; padding:2rem; overflow-y:auto; font-size:0.95rem; color:#e4e4e7; white-space:pre-wrap; font-family:monospace; position:relative; display:flex; align-items:center; justify-content:center; text-align:center;">
+                    <div style="max-width: 90%; text-align: left;">${content}</div>
+                 </div>
+                 <button class="tk-copy-btn" title="複製文字" style="
+                    position:absolute; top:12px; right:12px; 
+                    background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.2); 
+                    color:#fff; padding:6px 12px; border-radius:6px; cursor:pointer; font-size:13px;
+                    display:flex; align-items:center; gap:6px; backdrop-filter:blur(4px); transition: all 0.2s;
+                    z-index: 10;
+                 ">
+                    📋 複製提示詞
+                 </button>
+                 <div class="tk-preview-badge" style="background: rgba(16, 185, 129, 0.9);">
+                    <span class="tk-badge-text">📝 生成文字</span>
+                </div>
+            `;
+
+            // Add copy functionality
+            const copyBtn = previewSection.querySelector('.tk-copy-btn');
+            if (copyBtn) {
+                copyBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    navigator.clipboard.writeText(content).then(() => {
+                        const originalText = copyBtn.innerHTML;
+                        copyBtn.innerHTML = '✅ 已複製';
+                        copyBtn.style.background = 'rgba(16, 185, 129, 0.3)';
+                        setTimeout(() => {
+                            copyBtn.innerHTML = originalText;
+                            copyBtn.style.background = 'rgba(255,255,255,0.1)';
+                        }, 2000);
+                    });
+                };
+            }
+        }
     }
 };
