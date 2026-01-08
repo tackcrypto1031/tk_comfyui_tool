@@ -124,7 +124,22 @@ export const ToolkitApp = {
                 const response = await api.fetchApi('/tk/presets');
                 this.presetsCache = await response.json();
             }
-            const filtered = this.presetsCache.filter(p => p.category === category);
+
+            // Define Category Mapping
+            const catMap = {
+                'image': ['t2i', 'i2i', 'edit'],
+                'video': ['t2v', 'i2v', 'v2v'],
+                'reverse': ['rev_image', 'rev_video']
+            };
+
+            let filtered = [];
+            if (catMap[category]) {
+                filtered = this.presetsCache.filter(p => catMap[category].includes(p.category));
+            } else {
+                // Fallback for direct match or other
+                filtered = this.presetsCache.filter(p => p.category === category);
+            }
+
             ToolkitUI.renderPresetList(filtered, sidebarList, mainPanel, category);
         } catch (e) {
             console.error(e);
@@ -577,6 +592,11 @@ export const ToolkitApp = {
                                     <option value="t2i">文生圖 (T2I)</option>
                                     <option value="i2i">圖生圖 (I2I)</option>
                                     <option value="edit">圖片編輯 (Edit)</option>
+                                    <option value="t2v">文生影片 (T2V)</option>
+                                    <option value="i2v">圖生影片 (I2V)</option>
+                                    <option value="v2v">影片生影片 (V2V)</option>
+                                    <option value="rev_image">圖片反推 (Rev Img)</option>
+                                    <option value="rev_video">影片反推 (Rev Vid)</option>
                                 </select>
                             </div>
                         </div>
@@ -651,6 +671,11 @@ export const ToolkitApp = {
                 't2i': '🖼️ 文生圖 (T2I)',
                 'i2i': '🎨 圖生圖 (I2I)',
                 'edit': '🔨 圖片編輯 (Edit)',
+                't2v': '🎥 文生影片 (T2V)',
+                'i2v': '🎞️ 圖生影片 (I2V)',
+                'v2v': '📹 影片生影片 (V2V)',
+                'rev_image': '🔍 圖片反推',
+                'rev_video': '📼 影片反推',
                 'other': '📁 其他'
             };
 
@@ -676,8 +701,8 @@ export const ToolkitApp = {
                     const item = document.createElement('div');
                     item.style.cssText = "display:flex; align-items:center; gap:0.75rem; background:rgba(39,39,42,0.4); padding:0.75rem; border-radius:12px; border:1px solid var(--tk-border); transition: all 0.2s; position: relative; overflow: hidden; margin-bottom: 8px;";
                     item.innerHTML = `
-                        <div style="width:40px; height:40px; border-radius:8px; background:var(--tk-zinc-900); overflow:hidden; border:1px solid var(--tk-border);">
-                            <img src="${p.previewImageUrl}" style="width:100%; height:100%; object-fit:cover; opacity: 0.8;">
+                        <div style="width:40px; height:40px; border-radius:8px; background:var(--tk-zinc-900); overflow:hidden; border:1px solid var(--tk-border); display:flex; align-items:center; justify-content:center;">
+                            ${p.previewImageUrl ? `<img src="${p.previewImageUrl}" style="width:100%; height:100%; object-fit:cover; opacity: 0.8;" onerror="this.remove(); this.parentElement.innerText='🍌';">` : '<span style="font-size:1.2rem;">🍌</span>'}
                         </div>
                         <div style="flex:1; min-width:0;">
                              <div style="font-size:0.875rem; font-weight:600; color:var(--tk-zinc-200); text-overflow:ellipsis; overflow:hidden; white-space:nowrap;">${p.name}</div>

@@ -7,7 +7,7 @@ export const ToolkitUI = {
         if (this.isOpen) return;
         this.createModal();
         this.isOpen = true;
-        this.switchTab('t2i');
+        this.switchTab('image');
     },
 
     close() {
@@ -28,9 +28,9 @@ export const ToolkitUI = {
                         <span class="tk-logo-text">塔克小工具</span>
                     </div>
                     
-                        <button class="tk-tab-btn" data-tab="t2i">🖼️ 文生圖</button>
-                        <button class="tk-tab-btn" data-tab="i2i">🎨 圖生圖</button>
-                        <button class="tk-tab-btn" data-tab="edit">🔨 圖片編輯</button>
+                        <button class="tk-tab-btn" data-tab="image">🖼️ 圖片</button>
+                        <button class="tk-tab-btn" data-tab="video">🎥 影片</button>
+                        <button class="tk-tab-btn" data-tab="reverse">🔍 反推</button>
                         <button class="tk-tab-btn" data-tab="gallery">📂 我的作品</button>
                         <button class="tk-tab-btn" data-tab="admin" style="margin-left:8px;">⚙️ 管理員</button>
                     </nav>
@@ -158,32 +158,91 @@ export const ToolkitUI = {
             return;
         }
 
-        presets.forEach((p, index) => {
-            const card = document.createElement('div');
-            card.className = 'tk-preset-card';
-            card.innerHTML = `
-                <img src="${p.previewImageUrl || ''}" class="tk-preset-thumb" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2248%22 height=%2248%22><rect width=%2248%22 height=%2248%22 fill=%22%2318181b%22/><text x=%2250%%22 y=%2250%%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 fill=%22%233f3f46%22 font-size=%2220%22>?</text></svg>'">
-                <div class="tk-preset-info">
-                    <span class="tk-preset-name">${p.name}</span>
-                    <span class="tk-preset-meta">工作流已就緒</span>
-                </div>
-                <span style="color: #3f3f46; font-size: 0.75rem;">➔</span>
-            `;
+        // --- GROUPING LOGIC ---
+        // Define Display Names for Sub-Categories
+        const subCatNames = {
+            't2i': '文生圖',
+            'i2i': '圖生圖',
+            'edit': '圖片編輯',
+            't2v': '文生影片',
+            'i2v': '圖生影片',
+            'v2v': '影片生影片',
+            'rev_image': '圖片反推',
+            'rev_video': '影片反推'
+        };
 
-            const selectPreset = () => {
-                sidebarList.querySelectorAll('.tk-preset-card').forEach(c => c.classList.remove('active'));
-                card.classList.add('active');
-                this.renderUserForm(p, mainPanel);
-            };
+        // If we are searching, we might just show a flat list OR still grouped. 
+        // Let's stick to grouped for consistency.
 
-            card.onclick = selectPreset;
-            sidebarList.appendChild(card);
+        // We know the current active tab from sidebar.dataset.category usually, 
+        // but here we just group based on what we have in `presets`.
 
-            // Auto-select the first one if it's the first render and not searching
-            if (index === 0) {
-                selectPreset();
+        // 1. Group items
+        const groups = {};
+        const orderMap = ['t2i', 'i2i', 'edit', 't2v', 'i2v', 'v2v', 'rev_image', 'rev_video']; // Order of appearance
+
+        presets.forEach(p => {
+            const cat = p.category;
+            if (!groups[cat]) groups[cat] = [];
+            groups[cat].push(p);
+        });
+
+        let hasAnyItem = false;
+
+        // 2. Render Groups
+        orderMap.forEach(catKey => {
+            if (groups[catKey] && groups[catKey].length > 0) {
+                hasAnyItem = true;
+
+                // Render Header
+                const header = document.createElement('div');
+                header.className = 'tk-sidebar-group-header';
+                header.style.cssText = "color: var(--tk-zinc-500); font-size: 0.75rem; font-weight: 600; padding: 12px 0 4px 4px; text-transform: uppercase; letter-spacing: 0.05em;";
+                header.textContent = subCatNames[catKey] || catKey;
+                sidebarList.appendChild(header);
+
+                // Render Items
+                groups[catKey].forEach(p => {
+                    const card = document.createElement('div');
+                    card.className = 'tk-preset-card';
+
+                    // Banana Fallback Logic
+                    let imgHtml = '';
+                    if (p.previewImageUrl) {
+                        imgHtml = `<img src="${p.previewImageUrl}" class="tk-preset-thumb" loading="lazy" onerror="this.parentElement.innerHTML='<div class=\\'tk-preset-thumb\\' style=\\'display:flex;align-items:center;justify-content:center;font-size:1.5rem;background:#18181b;\\'>🍌</div>'">`;
+                    } else {
+                        imgHtml = `<div class="tk-preset-thumb" style="display:flex;align-items:center;justify-content:center;font-size:1.5rem;background:#18181b;">🍌</div>`;
+                    }
+
+                    card.innerHTML = `
+                        ${imgHtml}
+                        <div class="tk-preset-info">
+                            <span class="tk-preset-name">${p.name}</span>
+                            <span class="tk-preset-meta">工作流已就緒</span>
+                        </div>
+                        <span style="color: #3f3f46; font-size: 0.75rem;">➔</span>
+                    `;
+
+                    const selectPreset = () => {
+                        sidebarList.querySelectorAll('.tk-preset-card').forEach(c => c.classList.remove('active'));
+                        card.classList.add('active');
+                        this.renderUserForm(p, mainPanel);
+                    };
+
+                    card.onclick = selectPreset;
+                    sidebarList.appendChild(card);
+                });
             }
         });
+
+        // 3. Handle specific case: If presets exist but don't match the orderMap (unlikely given filters but possible for 'others')
+        // We can check for any 'other' categories if needed, but for now strict grouping is requested.
+
+        // Auto-select first item
+        const firstCard = sidebarList.querySelector('.tk-preset-card');
+        if (firstCard) {
+            firstCard.click();
+        }
     },
 
     renderUserForm(preset, container) {
@@ -295,7 +354,10 @@ export const ToolkitUI = {
         container.innerHTML = `
             <div class="tk-preset-content">
                 <div class="tk-preview-section">
-                    <img src="${preset.previewImageUrl}" class="tk-preview-img" loading="lazy" onerror="this.style.opacity='0.2'">
+                    ${preset.previewImageUrl ?
+                `<img src="${preset.previewImageUrl}" class="tk-preview-img" loading="lazy" onerror="this.outerHTML='<div class=\\'tk-preview-img\\' style=\\'display:flex;align-items:center;justify-content:center;font-size:5rem;background:#18181b;color:var(--tk-zinc-700);\\'>🍌</div>'">`
+                : `<div class="tk-preview-img" style="display:flex;align-items:center;justify-content:center;font-size:5rem;background:#18181b;color:var(--tk-zinc-700);">🍌</div>`
+            }
                     <div class="tk-preview-badge">
                         <div class="tk-badge-pulse"></div>
                         <span class="tk-badge-text">目前預設</span>
@@ -309,9 +371,11 @@ export const ToolkitUI = {
                     
                     <div class="tk-form-split-container">
                         <!-- Left Column: Prompts -->
+                        ${promptParams.length > 0 ? `
                         <div class="tk-form-left-col">
-                            ${promptParams.length > 0 ? promptParams.map(renderParamHtml).join('') : '<div style="color:var(--tk-zinc-600); font-size:0.8rem; text-align:center; padding:2rem;">無提示詞參數</div>'}
+                            ${promptParams.map(renderParamHtml).join('')}
                         </div>
+                        ` : ''}
 
                         <!-- Right Column: Others -->
                         <div class="tk-form-right-col">
