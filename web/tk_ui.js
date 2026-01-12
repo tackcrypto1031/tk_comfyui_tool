@@ -382,9 +382,20 @@ export const ToolkitUI = {
 
             // Find matching ratio
             const currentRatio = modelData.ratios.find(r => r.width == currW && r.height == currH);
-            const ratioSelectValue = currentRatio ? JSON.stringify({ w: currentRatio.width, h: currentRatio.height }) : 'custom';
 
-            // Force custom mode if no matching ratio and we are in ratio mode (edge case, but handled by select value)
+            // Group ratios by name (e.g., "16:9", "1:1")
+            const ratioGroups = {};
+            modelData.ratios.forEach(r => {
+                if (!ratioGroups[r.name]) ratioGroups[r.name] = [];
+                ratioGroups[r.name].push(r);
+            });
+            const uniqueRatioNames = Object.keys(ratioGroups);
+
+            // Determine initial selection for Group Select
+            let initialGroup = uniqueRatioNames.length > 0 ? uniqueRatioNames[0] : '';
+            if (currentRatio) {
+                initialGroup = currentRatio.name;
+            }
 
             sizeSelectionHtml = `
                 <div class="tk-form-group" style="background:rgba(24,24,27,0.5); padding:12px; border-radius:8px; border:1px solid var(--tk-border);">
@@ -402,16 +413,26 @@ export const ToolkitUI = {
                          </div>
                     </div>
 
-                    <!-- Ratio Selector -->
-                    <div id="tk-size-ratio-container" class="${sizeMode === 'ratio' ? '' : 'tk-hidden'}">
-                        <select class="tk-input" id="tk-size-ratio-select">
-                            ${modelData.ratios.map(r => `
-                                <option value='${JSON.stringify({ w: r.width, h: r.height })}' ${ratioSelectValue !== 'custom' && currentRatio && r.name === currentRatio.name ? 'selected' : ''}>
-                                    ${r.name} (${r.width}x${r.height})
-                                </option>
-                            `).join('')}
-                            ${ratioSelectValue === 'custom' ? `<option value="custom" selected disabled>自訂尺寸 (請切換到自訂模式)</option>` : ''}
-                        </select>
+                    <!-- Dependent Ratio Selectors -->
+                    <div id="tk-size-ratio-container" class="${sizeMode === 'ratio' ? '' : 'tk-hidden'}" style="display:flex; gap:8px;">
+                        
+                        <!-- 1. Ratio Group Selector -->
+                        <div style="flex: 1;">
+                            <label style="font-size:0.75rem; color:var(--tk-zinc-500); display:block; margin-bottom:4px;">比例 (Ratio)</label>
+                            <select class="tk-input" id="tk-size-ratio-group">
+                                ${uniqueRatioNames.map(name => `
+                                    <option value="${name}" ${name === initialGroup ? 'selected' : ''}>${name}</option>
+                                `).join('')}
+                            </select>
+                        </div>
+
+                        <!-- 2. Resolution Selector -->
+                        <div style="flex: 2;">
+                            <label style="font-size:0.75rem; color:var(--tk-zinc-500); display:block; margin-bottom:4px;">解析度 (Resolution)</label>
+                            <select class="tk-input" id="tk-size-resolution-select">
+                                <!-- Options populated via JS -->
+                            </select>
+                        </div>
                     </div>
 
                     <!-- Custom Inputs (Standard Rendering + Hidden inputs for Ratio to sync to) -->
@@ -508,10 +529,31 @@ export const ToolkitUI = {
 
         // --- SIZE SELECTION EVENT BINDING ---
         if (hasSizeSelection) {
-            const ratioSelect = container.querySelector('#tk-size-ratio-select');
+            const groupSelect = container.querySelector('#tk-size-ratio-group');
+            const resSelect = container.querySelector('#tk-size-resolution-select');
             const inputW = container.querySelector('.tk-size-input-w');
             const inputH = container.querySelector('.tk-size-input-h');
             const radios = container.querySelectorAll(`input[name="sizeMode_${preset.id}"]`);
+
+            // Helper to get matching ratio object
+            const getRatioObj = (w, h) => modelData.ratios.find(r => r.width == w && r.height == h);
+
+            // Group Ratios again for logic usage
+            const ratioGroups = {};
+            modelData.ratios.forEach(r => {
+                if (!ratioGroups[r.name]) ratioGroups[r.name] = [];
+                ratioGroups[r.name].push(r);
+            });
+
+            // Populate Resolution Select based on Group
+            const populateResolutions = (groupName) => {
+                const ratios = ratioGroups[groupName] || [];
+                resSelect.innerHTML = ratios.map(r => `
+                    <option value='${JSON.stringify({ w: r.width, h: r.height })}'>
+                        ${r.width} x ${r.height}
+                    </option>
+                `).join('');
+            };
 
             const updateHiddenInputs = (w, h) => {
                 inputW.value = w;
@@ -520,7 +562,49 @@ export const ToolkitUI = {
                 inputH.dispatchEvent(new Event('change'));
             };
 
-            // Radio Change
+            // 1. Initial Populate
+            if (groupSelect && groupSelect.value) {
+                populateResolutions(groupSelect.value);
+
+                // Try to sync selection with current width/height
+                const currW = inputW.value;
+                const currH = inputH.value;
+                const match = modelData.ratios.find(r => r.width == currW && r.height == currH && r.name === groupSelect.value);
+
+                if (match) {
+                    resSelect.value = JSON.stringify({ w: match.width, h: match.height });
+                } else if (sizeMode === 'ratio' || !match) {
+                    // If mismatch but in ratio mode, force update to first option
+                    // Or if custom mode but we want UI consistency
+                    if (resSelect.options.length > 0) {
+                        const firstVal = JSON.parse(resSelect.options[0].value);
+                        if (sizeMode === 'ratio') updateHiddenInputs(firstVal.w, firstVal.h);
+                        resSelect.selectedIndex = 0;
+                    }
+                }
+            }
+
+            // 2. Event Listeners
+            if (groupSelect) {
+                groupSelect.onchange = (e) => {
+                    const group = e.target.value;
+                    populateResolutions(group);
+                    // Output first resolution of new group
+                    if (resSelect.options.length > 0) {
+                        const dims = JSON.parse(resSelect.options[0].value);
+                        updateHiddenInputs(dims.w, dims.h);
+                    }
+                };
+            }
+
+            if (resSelect) {
+                resSelect.onchange = (e) => {
+                    const dims = JSON.parse(e.target.value);
+                    updateHiddenInputs(dims.w, dims.h);
+                };
+            }
+
+            // Radio Change logic
             radios.forEach(r => {
                 r.onchange = (e) => {
                     const newMode = e.target.value;
@@ -538,9 +622,9 @@ export const ToolkitUI = {
                     if (newMode === 'ratio') {
                         ratioContainer.classList.remove('tk-hidden');
                         customContainer.classList.add('tk-hidden');
-                        // Force update to selected ratio
-                        if (ratioSelect.value && ratioSelect.value !== 'custom') {
-                            const dims = JSON.parse(ratioSelect.value);
+                        // Force update to selected resolution
+                        if (resSelect && resSelect.value) {
+                            const dims = JSON.parse(resSelect.value);
                             updateHiddenInputs(dims.w, dims.h);
                         }
                     } else {
@@ -549,33 +633,6 @@ export const ToolkitUI = {
                     }
                 };
             });
-
-            // Ratio Select Change
-            if (ratioSelect) {
-                ratioSelect.onchange = (e) => {
-                    const val = e.target.value;
-                    if (val && val !== 'custom') {
-                        const dims = JSON.parse(val);
-                        updateHiddenInputs(dims.w, dims.h);
-                    }
-                };
-
-                // If initializing in ratio mode and no match (custom shown in select), auto-select first ratio?
-                // Or leave as is. Current logic: value="custom" disabled option selected.
-                // Better UX: If ratio mode active but current size matches none, force first ratio.
-                if (sizeMode === 'ratio' && modelData.ratios.length > 0) {
-                    // Check if current value matches any ratio
-                    const currW = inputsState[widthParam.nodeId + '_' + widthParam.inputName] !== undefined ? inputsState[widthParam.nodeId + '_' + widthParam.inputName] : widthParam.defaultValue;
-                    const currH = inputsState[heightParam.nodeId + '_' + heightParam.inputName] !== undefined ? inputsState[heightParam.nodeId + '_' + heightParam.inputName] : heightParam.defaultValue;
-                    const match = modelData.ratios.find(r => r.width == currW && r.height == currH);
-
-                    if (!match) {
-                        const first = modelData.ratios[0];
-                        ratioSelect.value = JSON.stringify({ w: first.width, h: first.height });
-                        updateHiddenInputs(first.width, first.height);
-                    }
-                }
-            }
         }
 
         // Restore Preview if exists
