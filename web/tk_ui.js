@@ -245,12 +245,33 @@ export const ToolkitUI = {
         }
     },
 
-    renderUserForm(preset, container) {
+    async renderUserForm(preset, container) {
+        // 0. Ensure models loaded if needed
+        if (preset.modelUsage && !ToolkitApp.modelsCache) {
+            await ToolkitApp.loadModels();
+        }
+
         // 1. Recover State
         const savedState = ToolkitApp.getPresetState(preset.id);
         const inputsState = savedState ? savedState.inputs : {};
+        const sizeMode = (savedState && savedState.sizeMode) ? savedState.sizeMode : 'ratio'; // 'ratio' or 'custom'
 
         const visibleParams = preset.parameters.filter(p => p.visible);
+
+        // --- SIZE SELECTION LOGIC ---
+        let widthParam = null;
+        let heightParam = null;
+        let modelData = null;
+
+        if (preset.modelUsage && ToolkitApp.modelsCache) {
+            modelData = ToolkitApp.modelsCache.find(m => m.id === preset.modelUsage);
+            if (modelData) {
+                widthParam = visibleParams.find(p => p.inputName.toLowerCase() === 'width');
+                heightParam = visibleParams.find(p => p.inputName.toLowerCase() === 'height');
+            }
+        }
+
+        const hasSizeSelection = widthParam && heightParam && modelData;
 
         const isLongTextParam = (p) => {
             return p.inputName.toLowerCase().includes('text') ||
@@ -349,7 +370,73 @@ export const ToolkitUI = {
         };
 
         const promptParams = visibleParams.filter(p => isLongTextParam(p));
-        const otherParams = visibleParams.filter(p => !isLongTextParam(p));
+        // Filter out width/height if handling specifically
+        const otherParams = visibleParams.filter(p => !isLongTextParam(p) && (!hasSizeSelection || (p !== widthParam && p !== heightParam)));
+
+        // --- SIZE SELECTION HTML GENERATION ---
+        let sizeSelectionHtml = '';
+        if (hasSizeSelection) {
+            // Determine current values
+            const currW = inputsState[widthParam.nodeId + '_' + widthParam.inputName] !== undefined ? inputsState[widthParam.nodeId + '_' + widthParam.inputName] : widthParam.defaultValue;
+            const currH = inputsState[heightParam.nodeId + '_' + heightParam.inputName] !== undefined ? inputsState[heightParam.nodeId + '_' + heightParam.inputName] : heightParam.defaultValue;
+
+            // Find matching ratio
+            const currentRatio = modelData.ratios.find(r => r.width == currW && r.height == currH);
+            const ratioSelectValue = currentRatio ? JSON.stringify({ w: currentRatio.width, h: currentRatio.height }) : 'custom';
+
+            // Force custom mode if no matching ratio and we are in ratio mode (edge case, but handled by select value)
+
+            sizeSelectionHtml = `
+                <div class="tk-form-group" style="background:rgba(24,24,27,0.5); padding:12px; border-radius:8px; border:1px solid var(--tk-border);">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                         <label class="tk-label" style="margin:0;">📏 尺寸選擇 (${modelData.name})</label>
+                         <div style="display:flex; gap:8px; font-size:0.75rem;">
+                             <label style="cursor:pointer; display:flex; align-items:center; gap:4px; ${sizeMode === 'ratio' ? 'color:var(--tk-emerald-400);' : 'color:var(--tk-zinc-500);'}">
+                                <input type="radio" name="sizeMode_${preset.id}" value="ratio" ${sizeMode === 'ratio' ? 'checked' : ''} style="display:none">
+                                <span>選擇比例</span>
+                             </label>
+                             <label style="cursor:pointer; display:flex; align-items:center; gap:4px; ${sizeMode === 'custom' ? 'color:var(--tk-emerald-400);' : 'color:var(--tk-zinc-500);'}">
+                                <input type="radio" name="sizeMode_${preset.id}" value="custom" ${sizeMode === 'custom' ? 'checked' : ''} style="display:none">
+                                <span>自訂</span>
+                             </label>
+                         </div>
+                    </div>
+
+                    <!-- Ratio Selector -->
+                    <div id="tk-size-ratio-container" class="${sizeMode === 'ratio' ? '' : 'tk-hidden'}">
+                        <select class="tk-input" id="tk-size-ratio-select">
+                            ${modelData.ratios.map(r => `
+                                <option value='${JSON.stringify({ w: r.width, h: r.height })}' ${ratioSelectValue !== 'custom' && currentRatio && r.name === currentRatio.name ? 'selected' : ''}>
+                                    ${r.name} (${r.width}x${r.height})
+                                </option>
+                            `).join('')}
+                            ${ratioSelectValue === 'custom' ? `<option value="custom" selected disabled>自訂尺寸 (請切換到自訂模式)</option>` : ''}
+                        </select>
+                    </div>
+
+                    <!-- Custom Inputs (Standard Rendering + Hidden inputs for Ratio to sync to) -->
+                    <div id="tk-size-custom-container" class="${sizeMode === 'custom' ? '' : 'tk-hidden'}" style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+                         <div>
+                            <label style="font-size:0.7rem; color:var(--tk-zinc-500);">Width</label>
+                            <input type="number" class="tk-input tk-form-input tk-size-input-w" 
+                                data-node="${widthParam.nodeId}" data-input="${widthParam.inputName}" data-type="number"
+                                value="${currW}"
+                                style="width:100%; box-sizing:border-box;"
+                                onchange="ToolkitApp.savePresetState('${preset.id}', { inputs: { ['${widthParam.nodeId}_${widthParam.inputName}']: this.value } })">
+                         </div>
+                         <div>
+                            <label style="font-size:0.7rem; color:var(--tk-zinc-500);">Height</label>
+                            <input type="number" class="tk-input tk-form-input tk-size-input-h" 
+                                data-node="${heightParam.nodeId}" data-input="${heightParam.inputName}" data-type="number"
+                                value="${currH}"
+                                style="width:100%; box-sizing:border-box;"
+                                onchange="ToolkitApp.savePresetState('${preset.id}', { inputs: { ['${heightParam.nodeId}_${heightParam.inputName}']: this.value } })">
+                         </div>
+                    </div>
+                </div>
+            `;
+        }
+
 
         container.innerHTML = `
             <div class="tk-preset-content">
@@ -380,6 +467,7 @@ export const ToolkitUI = {
                         <!-- Right Column: Others -->
                         <div class="tk-form-right-col">
                             <div class="tk-form-grid">
+                                ${sizeSelectionHtml}
                                 ${otherParams.map(renderParamHtml).join('')}
                             </div>
                         </div>
@@ -401,6 +489,78 @@ export const ToolkitUI = {
         container.querySelector('#tk-generate-btn').onclick = () => {
             ToolkitApp.executeWorkflow(preset);
         };
+
+        // --- SIZE SELECTION EVENT BINDING ---
+        if (hasSizeSelection) {
+            const ratioSelect = container.querySelector('#tk-size-ratio-select');
+            const inputW = container.querySelector('.tk-size-input-w');
+            const inputH = container.querySelector('.tk-size-input-h');
+            const radios = container.querySelectorAll(`input[name="sizeMode_${preset.id}"]`);
+
+            const updateHiddenInputs = (w, h) => {
+                inputW.value = w;
+                inputW.dispatchEvent(new Event('change')); // Trigger savePresetState
+                inputH.value = h;
+                inputH.dispatchEvent(new Event('change'));
+            };
+
+            // Radio Change
+            radios.forEach(r => {
+                r.onchange = (e) => {
+                    const newMode = e.target.value;
+                    ToolkitApp.savePresetState(preset.id, { sizeMode: newMode });
+
+                    // UI Toggle
+                    const ratioContainer = container.querySelector('#tk-size-ratio-container');
+                    const customContainer = container.querySelector('#tk-size-custom-container');
+
+                    // Update Label Colors
+                    radios.forEach(rad => {
+                        rad.parentElement.style.color = rad.checked ? 'var(--tk-emerald-400)' : 'var(--tk-zinc-500)';
+                    });
+
+                    if (newMode === 'ratio') {
+                        ratioContainer.classList.remove('tk-hidden');
+                        customContainer.classList.add('tk-hidden');
+                        // Force update to selected ratio
+                        if (ratioSelect.value && ratioSelect.value !== 'custom') {
+                            const dims = JSON.parse(ratioSelect.value);
+                            updateHiddenInputs(dims.w, dims.h);
+                        }
+                    } else {
+                        ratioContainer.classList.add('tk-hidden');
+                        customContainer.classList.remove('tk-hidden');
+                    }
+                };
+            });
+
+            // Ratio Select Change
+            if (ratioSelect) {
+                ratioSelect.onchange = (e) => {
+                    const val = e.target.value;
+                    if (val && val !== 'custom') {
+                        const dims = JSON.parse(val);
+                        updateHiddenInputs(dims.w, dims.h);
+                    }
+                };
+
+                // If initializing in ratio mode and no match (custom shown in select), auto-select first ratio?
+                // Or leave as is. Current logic: value="custom" disabled option selected.
+                // Better UX: If ratio mode active but current size matches none, force first ratio.
+                if (sizeMode === 'ratio' && modelData.ratios.length > 0) {
+                    // Check if current value matches any ratio
+                    const currW = inputsState[widthParam.nodeId + '_' + widthParam.inputName] !== undefined ? inputsState[widthParam.nodeId + '_' + widthParam.inputName] : widthParam.defaultValue;
+                    const currH = inputsState[heightParam.nodeId + '_' + heightParam.inputName] !== undefined ? inputsState[heightParam.nodeId + '_' + heightParam.inputName] : heightParam.defaultValue;
+                    const match = modelData.ratios.find(r => r.width == currW && r.height == currH);
+
+                    if (!match) {
+                        const first = modelData.ratios[0];
+                        ratioSelect.value = JSON.stringify({ w: first.width, h: first.height });
+                        updateHiddenInputs(first.width, first.height);
+                    }
+                }
+            }
+        }
 
         // Restore Preview if exists
         if (savedState && savedState.preview) {

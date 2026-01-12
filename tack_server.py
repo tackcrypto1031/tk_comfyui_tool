@@ -165,3 +165,50 @@ class TackServer:
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
+    def get_models(self):
+        try:
+            models_path = os.path.join(self.config_dir, "models.json")
+            if not os.path.exists(models_path):
+                # Default seed data if file doesn't exist
+                default_models = [
+                    {
+                        "id": "sdxl",
+                        "name": "SDXL",
+                        "ratios": [
+                            {"name": "1:1", "width": 1024, "height": 1024},
+                            {"name": "3:4", "width": 896, "height": 1152},
+                            {"name": "4:3", "width": 1152, "height": 896},
+                            {"name": "9:16", "width": 832, "height": 1216},
+                            {"name": "16:9", "width": 1216, "height": 832}
+                        ]
+                    },
+                     {
+                        "id": "sd15",
+                        "name": "SD 1.5",
+                        "ratios": [
+                            {"name": "1:1", "width": 512, "height": 512},
+                            {"name": "2:3", "width": 512, "height": 768},
+                            {"name": "3:2", "width": 768, "height": 512}
+                        ]
+                    }
+                ]
+                with open(models_path, "w", encoding="utf-8") as f:
+                    json.dump(default_models, f, indent=2, ensure_ascii=False)
+                return default_models
+            
+            with open(models_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Error reading models: {e}")
+            return []
+
+    def save_models(self, models_data):
+        try:
+            models_path = os.path.join(self.config_dir, "models.json")
+            with open(models_path, "w", encoding="utf-8") as f:
+                json.dump(models_data, f, indent=2, ensure_ascii=False)
+            return {"status": "success"}
+        except Exception as e:
+            print(f"Error saving models: {e}")
+            return {"status": "error", "message": str(e)}
+
