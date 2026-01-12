@@ -103,4 +103,13 @@ async def debug_input_files(request):
     except Exception as e:
         return web.json_response({"status": "error", "message": str(e)})
 
+@PromptServer.instance.routes.get("/tk/models")
+async def get_models(request):
+    return web.json_response(server_util.get_models())
+
+@PromptServer.instance.routes.post("/tk/save_models")
+async def save_models(request):
+    data = await request.json()
+    return web.json_response(server_util.save_models(data))
+
 print("🍌 ComfyUI Toolkit Node: Loaded")

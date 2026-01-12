@@ -245,12 +245,33 @@ export const ToolkitUI = {
         }
     },
 
-    renderUserForm(preset, container) {
+    async renderUserForm(preset, container) {
+        // 0. Ensure models loaded if needed
+        if (preset.modelUsage && !ToolkitApp.modelsCache) {
+            await ToolkitApp.loadModels();
+        }
+
         // 1. Recover State
         const savedState = ToolkitApp.getPresetState(preset.id);
         const inputsState = savedState ? savedState.inputs : {};
+        const sizeMode = (savedState && savedState.sizeMode) ? savedState.sizeMode : 'ratio'; // 'ratio' or 'custom'
 
         const visibleParams = preset.parameters.filter(p => p.visible);
+
+        // --- SIZE SELECTION LOGIC ---
+        let widthParam = null;
+        let heightParam = null;
+        let modelData = null;
+
+        if (preset.modelUsage && ToolkitApp.modelsCache) {
+            modelData = ToolkitApp.modelsCache.find(m => m.id === preset.modelUsage);
+            if (modelData) {
+                widthParam = visibleParams.find(p => p.inputName.toLowerCase() === 'width');
+                heightParam = visibleParams.find(p => p.inputName.toLowerCase() === 'height');
+            }
+        }
+
+        const hasSizeSelection = widthParam && heightParam && modelData;
 
         const isLongTextParam = (p) => {
             return p.inputName.toLowerCase().includes('text') ||
@@ -349,7 +370,94 @@ export const ToolkitUI = {
         };
 
         const promptParams = visibleParams.filter(p => isLongTextParam(p));
-        const otherParams = visibleParams.filter(p => !isLongTextParam(p));
+        // Filter out width/height if handling specifically
+        const otherParams = visibleParams.filter(p => !isLongTextParam(p) && (!hasSizeSelection || (p !== widthParam && p !== heightParam)));
+
+        // --- SIZE SELECTION HTML GENERATION ---
+        let sizeSelectionHtml = '';
+        if (hasSizeSelection) {
+            // Determine current values
+            const currW = inputsState[widthParam.nodeId + '_' + widthParam.inputName] !== undefined ? inputsState[widthParam.nodeId + '_' + widthParam.inputName] : widthParam.defaultValue;
+            const currH = inputsState[heightParam.nodeId + '_' + heightParam.inputName] !== undefined ? inputsState[heightParam.nodeId + '_' + heightParam.inputName] : heightParam.defaultValue;
+
+            // Find matching ratio
+            const currentRatio = modelData.ratios.find(r => r.width == currW && r.height == currH);
+
+            // Group ratios by name (e.g., "16:9", "1:1")
+            const ratioGroups = {};
+            modelData.ratios.forEach(r => {
+                if (!ratioGroups[r.name]) ratioGroups[r.name] = [];
+                ratioGroups[r.name].push(r);
+            });
+            const uniqueRatioNames = Object.keys(ratioGroups);
+
+            // Determine initial selection for Group Select
+            let initialGroup = uniqueRatioNames.length > 0 ? uniqueRatioNames[0] : '';
+            if (currentRatio) {
+                initialGroup = currentRatio.name;
+            }
+
+            sizeSelectionHtml = `
+                <div class="tk-form-group" style="background:rgba(24,24,27,0.5); padding:12px; border-radius:8px; border:1px solid var(--tk-border);">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                         <label class="tk-label" style="margin:0;">📏 尺寸選擇 (${modelData.name})</label>
+                         <div style="display:flex; gap:8px; font-size:0.75rem;">
+                             <label style="cursor:pointer; display:flex; align-items:center; gap:4px; ${sizeMode === 'ratio' ? 'color:var(--tk-emerald-400);' : 'color:var(--tk-zinc-500);'}">
+                                <input type="radio" name="sizeMode_${preset.id}" value="ratio" ${sizeMode === 'ratio' ? 'checked' : ''} style="display:none">
+                                <span>選擇比例</span>
+                             </label>
+                             <label style="cursor:pointer; display:flex; align-items:center; gap:4px; ${sizeMode === 'custom' ? 'color:var(--tk-emerald-400);' : 'color:var(--tk-zinc-500);'}">
+                                <input type="radio" name="sizeMode_${preset.id}" value="custom" ${sizeMode === 'custom' ? 'checked' : ''} style="display:none">
+                                <span>自訂</span>
+                             </label>
+                         </div>
+                    </div>
+
+                    <!-- Dependent Ratio Selectors -->
+                    <div id="tk-size-ratio-container" class="${sizeMode === 'ratio' ? '' : 'tk-hidden'}" style="display:flex; gap:8px;">
+                        
+                        <!-- 1. Ratio Group Selector -->
+                        <div style="flex: 1;">
+                            <label style="font-size:0.75rem; color:var(--tk-zinc-500); display:block; margin-bottom:4px;">比例 (Ratio)</label>
+                            <select class="tk-input" id="tk-size-ratio-group">
+                                ${uniqueRatioNames.map(name => `
+                                    <option value="${name}" ${name === initialGroup ? 'selected' : ''}>${name}</option>
+                                `).join('')}
+                            </select>
+                        </div>
+
+                        <!-- 2. Resolution Selector -->
+                        <div style="flex: 2;">
+                            <label style="font-size:0.75rem; color:var(--tk-zinc-500); display:block; margin-bottom:4px;">解析度 (Resolution)</label>
+                            <select class="tk-input" id="tk-size-resolution-select">
+                                <!-- Options populated via JS -->
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Custom Inputs (Standard Rendering + Hidden inputs for Ratio to sync to) -->
+                    <div id="tk-size-custom-container" class="${sizeMode === 'custom' ? '' : 'tk-hidden'}" style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+                         <div>
+                            <label style="font-size:0.7rem; color:var(--tk-zinc-500);">Width</label>
+                            <input type="number" class="tk-input tk-form-input tk-size-input-w" 
+                                data-node="${widthParam.nodeId}" data-input="${widthParam.inputName}" data-type="number"
+                                value="${currW}"
+                                style="width:100%; box-sizing:border-box;"
+                                onchange="ToolkitApp.savePresetState('${preset.id}', { inputs: { ['${widthParam.nodeId}_${widthParam.inputName}']: this.value } })">
+                         </div>
+                         <div>
+                            <label style="font-size:0.7rem; color:var(--tk-zinc-500);">Height</label>
+                            <input type="number" class="tk-input tk-form-input tk-size-input-h" 
+                                data-node="${heightParam.nodeId}" data-input="${heightParam.inputName}" data-type="number"
+                                value="${currH}"
+                                style="width:100%; box-sizing:border-box;"
+                                onchange="ToolkitApp.savePresetState('${preset.id}', { inputs: { ['${heightParam.nodeId}_${heightParam.inputName}']: this.value } })">
+                         </div>
+                    </div>
+                </div>
+            `;
+        }
+
 
         container.innerHTML = `
             <div class="tk-preset-content">
@@ -380,12 +488,29 @@ export const ToolkitUI = {
                         <!-- Right Column: Others -->
                         <div class="tk-form-right-col">
                             <div class="tk-form-grid">
+                                ${sizeSelectionHtml}
                                 ${otherParams.map(renderParamHtml).join('')}
                             </div>
                         </div>
                     </div>
 
-                    <div class="tk-action-bar">
+                    <div class="tk-action-bar" style="flex-direction: column; gap: 1rem;">
+                        ${preset.allowBatch ? `
+                        <div style="width:100%; padding: 12px; background: rgba(39, 39, 42, 0.4); border: 1px solid var(--tk-border); border-radius: 8px; transition: all 0.3s;">
+                            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--tk-zinc-300); font-weight: 500; user-select: none;">
+                                <input type="checkbox" id="tk-batch-toggle" style="accent-color: var(--tk-emerald-500); width:16px; height:16px;" onchange="document.getElementById('tk-batch-config').classList.toggle('tk-hidden', !this.checked); if(this.checked) document.querySelector('.tk-form-container').scrollTop = document.querySelector('.tk-form-container').scrollHeight;">
+                                <span>🚀 批量生成 (Batch Generation)</span>
+                            </label>
+                            <div id="tk-batch-config" class="tk-hidden" style="margin-top: 12px; padding-left: 4px; border-top: 1px solid var(--tk-border); padding-top: 12px; animation: tk-fade-in 0.2s;">
+                                <div style="display:flex; align-items:center; gap:12px;">
+                                    <span style="font-size: 0.85rem; color: var(--tk-zinc-400);">生成張數 (Count):</span>
+                                    <input type="number" id="tk-batch-count" value="2" min="2" max="10" step="1" class="tk-input" style="width: 100px;">
+                                    <span style="font-size: 0.75rem; color: var(--tk-zinc-500);">(2 - 10)</span>
+                                </div>
+                                <p style="font-size: 0.75rem; color: var(--tk-emerald-500); margin-top: 6px; opacity: 0.8;">ℹ️ 每一張圖片將使用不同的隨機種子</p>
+                            </div>
+                        </div>
+                        ` : ''}
                         <div id="tk-status-container" class="tk-hidden">
                              <div id="tk-status-msg" class="tk-status-msg"></div>
                         </div>
@@ -401,6 +526,114 @@ export const ToolkitUI = {
         container.querySelector('#tk-generate-btn').onclick = () => {
             ToolkitApp.executeWorkflow(preset);
         };
+
+        // --- SIZE SELECTION EVENT BINDING ---
+        if (hasSizeSelection) {
+            const groupSelect = container.querySelector('#tk-size-ratio-group');
+            const resSelect = container.querySelector('#tk-size-resolution-select');
+            const inputW = container.querySelector('.tk-size-input-w');
+            const inputH = container.querySelector('.tk-size-input-h');
+            const radios = container.querySelectorAll(`input[name="sizeMode_${preset.id}"]`);
+
+            // Helper to get matching ratio object
+            const getRatioObj = (w, h) => modelData.ratios.find(r => r.width == w && r.height == h);
+
+            // Group Ratios again for logic usage
+            const ratioGroups = {};
+            modelData.ratios.forEach(r => {
+                if (!ratioGroups[r.name]) ratioGroups[r.name] = [];
+                ratioGroups[r.name].push(r);
+            });
+
+            // Populate Resolution Select based on Group
+            const populateResolutions = (groupName) => {
+                const ratios = ratioGroups[groupName] || [];
+                resSelect.innerHTML = ratios.map(r => `
+                    <option value='${JSON.stringify({ w: r.width, h: r.height })}'>
+                        ${r.width} x ${r.height}
+                    </option>
+                `).join('');
+            };
+
+            const updateHiddenInputs = (w, h) => {
+                inputW.value = w;
+                inputW.dispatchEvent(new Event('change')); // Trigger savePresetState
+                inputH.value = h;
+                inputH.dispatchEvent(new Event('change'));
+            };
+
+            // 1. Initial Populate
+            if (groupSelect && groupSelect.value) {
+                populateResolutions(groupSelect.value);
+
+                // Try to sync selection with current width/height
+                const currW = inputW.value;
+                const currH = inputH.value;
+                const match = modelData.ratios.find(r => r.width == currW && r.height == currH && r.name === groupSelect.value);
+
+                if (match) {
+                    resSelect.value = JSON.stringify({ w: match.width, h: match.height });
+                } else if (sizeMode === 'ratio' || !match) {
+                    // If mismatch but in ratio mode, force update to first option
+                    // Or if custom mode but we want UI consistency
+                    if (resSelect.options.length > 0) {
+                        const firstVal = JSON.parse(resSelect.options[0].value);
+                        if (sizeMode === 'ratio') updateHiddenInputs(firstVal.w, firstVal.h);
+                        resSelect.selectedIndex = 0;
+                    }
+                }
+            }
+
+            // 2. Event Listeners
+            if (groupSelect) {
+                groupSelect.onchange = (e) => {
+                    const group = e.target.value;
+                    populateResolutions(group);
+                    // Output first resolution of new group
+                    if (resSelect.options.length > 0) {
+                        const dims = JSON.parse(resSelect.options[0].value);
+                        updateHiddenInputs(dims.w, dims.h);
+                    }
+                };
+            }
+
+            if (resSelect) {
+                resSelect.onchange = (e) => {
+                    const dims = JSON.parse(e.target.value);
+                    updateHiddenInputs(dims.w, dims.h);
+                };
+            }
+
+            // Radio Change logic
+            radios.forEach(r => {
+                r.onchange = (e) => {
+                    const newMode = e.target.value;
+                    ToolkitApp.savePresetState(preset.id, { sizeMode: newMode });
+
+                    // UI Toggle
+                    const ratioContainer = container.querySelector('#tk-size-ratio-container');
+                    const customContainer = container.querySelector('#tk-size-custom-container');
+
+                    // Update Label Colors
+                    radios.forEach(rad => {
+                        rad.parentElement.style.color = rad.checked ? 'var(--tk-emerald-400)' : 'var(--tk-zinc-500)';
+                    });
+
+                    if (newMode === 'ratio') {
+                        ratioContainer.classList.remove('tk-hidden');
+                        customContainer.classList.add('tk-hidden');
+                        // Force update to selected resolution
+                        if (resSelect && resSelect.value) {
+                            const dims = JSON.parse(resSelect.value);
+                            updateHiddenInputs(dims.w, dims.h);
+                        }
+                    } else {
+                        ratioContainer.classList.add('tk-hidden');
+                        customContainer.classList.remove('tk-hidden');
+                    }
+                };
+            });
+        }
 
         // Restore Preview if exists
         if (savedState && savedState.preview) {

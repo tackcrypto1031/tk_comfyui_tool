@@ -265,65 +265,117 @@ export const ToolkitApp = {
                 }
             }
 
-            statusMsg.textContent = "📡 正在發送到 ComfyUI...";
 
-            const p = {
-                prompt: workflow,
-                client_id: api.clientId
-            };
+            // --- BATCH CONFIRMATION & VALIDATION ---
+            const batchToggle = document.getElementById('tk-batch-toggle');
+            const isBatch = batchToggle && batchToggle.checked;
+            let batchCount = 1;
 
-            const response = await api.fetchApi('/prompt', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(p)
-            });
-
-            if (response.ok) {
-                const resData = await response.json();
-
-                // Save to history
-                try {
-                    await api.fetchApi('/tk/save_history', {
-                        method: 'POST',
-                        body: JSON.stringify({
-                            id: this.uuidv4(),
-                            prompt_id: resData.prompt_id,
-                            preset_name: preset.name,
-                            timestamp: Date.now(),
-                            workflow: workflow, // Save the Modified workflow with user inputs
-                            status: 'queued'
-                        })
-                    });
-                } catch (err) { console.error("Failed to save history", err); }
-
-                // Set current prompt ID for onExecuted listener
-                this.currentPromptId = resData.prompt_id;
-                this.currentPresetId = preset.id; // Track which preset started this
-
-                statusMsg.innerHTML = `✅ 已成功加入隊列！<br><span style="font-size:0.8em; color:var(--tk-emerald-400); cursor:pointer; text-decoration:underline;" onclick="document.querySelector('[data-tab=gallery]').click()">👉 前往「我的作品」查看進度</span>`;
-
-                setTimeout(() => {
+            if (isBatch) {
+                const countInput = document.getElementById('tk-batch-count');
+                batchCount = parseInt(countInput.value);
+                if (isNaN(batchCount) || batchCount < 2 || batchCount > 10 || !Number.isInteger(batchCount)) {
+                    alert('批量生成數量必須在 2 到 10 之間 (整數)。');
                     btn.disabled = false;
-                    btn.innerHTML = '<span style="font-size: 1.2rem;">⚡</span> 生成 (Generate)';
+                    btn.innerHTML = '重試 (Retry)';
                     statusContainer.classList.add('tk-hidden');
-                }, 4000);
-
-                // Force progress bar show
-                const bar = document.getElementById('tk-progress-area');
-                if (bar) bar.classList.remove('tk-hidden');
-
-            } else {
-                let errText = response.statusText;
-                try {
-                    const errJson = await response.json();
-                    if (errJson && errJson.error) errText = JSON.stringify(errJson.error);
-                    else if (errJson) errText = JSON.stringify(errJson);
-                } catch (e2) {
-                    const txt = await response.text();
-                    if (txt) errText = txt;
+                    return;
                 }
-                throw new Error(`API Error ${response.status}: ${errText}`);
             }
+
+            // --- EXECUTION LOOP ---
+            for (let i = 0; i < batchCount; i++) {
+                if (isBatch) {
+                    statusMsg.textContent = `📡 正在發送批量任務 (${i + 1}/${batchCount})...`;
+                } else {
+                    statusMsg.textContent = "📡 正在發送到 ComfyUI...";
+                }
+
+                // 1. Clone Workflow for this iteration
+                // For batch, we perform fresh randomization. For single, we use 'workflow' as already prepared (with user seed).
+                // However, to keep logic clean, if batch, we clone and randomize. 
+                // If single, we just use 'workflow'.
+                let currentWorkflow = workflow;
+
+                if (isBatch) {
+                    currentWorkflow = JSON.parse(JSON.stringify(workflow));
+                    // Force Randomize Seeds
+                    for (const nid in currentWorkflow) {
+                        const n = currentWorkflow[nid];
+                        if (n.inputs) {
+                            if (n.inputs['seed'] !== undefined) n.inputs['seed'] = Math.floor(Math.random() * 100000000000000);
+                            if (n.inputs['noise_seed'] !== undefined) n.inputs['noise_seed'] = Math.floor(Math.random() * 100000000000000);
+                        }
+                    }
+                }
+
+                const p = {
+                    prompt: currentWorkflow,
+                    client_id: api.clientId
+                };
+
+                const response = await api.fetchApi('/prompt', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(p)
+                });
+
+                if (response.ok) {
+                    const resData = await response.json();
+
+                    // Save to history
+                    try {
+                        await api.fetchApi('/tk/save_history', {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                id: this.uuidv4(),
+                                prompt_id: resData.prompt_id,
+                                preset_name: preset.name,
+                                timestamp: Date.now(),
+                                workflow: currentWorkflow, // Save the specific one
+                                status: 'queued'
+                            })
+                        });
+                    } catch (err) { console.error("Failed to save history", err); }
+
+                    // Set current prompt ID for onExecuted listener
+                    // In batch mode, this might overwrite quickly, but it ensures at least the last one triggers the preview or loading logic.
+                    this.currentPromptId = resData.prompt_id;
+                    this.currentPresetId = preset.id;
+
+                } else {
+                    let errText = response.statusText;
+                    try {
+                        const errJson = await response.json();
+                        if (errJson && errJson.error) errText = JSON.stringify(errJson.error);
+                        else if (errJson) errText = JSON.stringify(errJson);
+                    } catch (e2) {
+                        const txt = await response.text();
+                        if (txt) errText = txt;
+                    }
+                    throw new Error(`API Error ${response.status}: ${errText}`);
+                }
+
+                // Small delay between batch submissions to ensure order and avoid overwhelm
+                if (isBatch && i < batchCount - 1) {
+                    await new Promise(r => setTimeout(r, 250));
+                }
+            }
+
+            // --- SUCCESS STATE (After all submitted) ---
+            statusMsg.innerHTML = isBatch
+                ? `✅ 已成功加入批量隊列 (${batchCount}張)！<br><span style="font-size:0.8em; color:var(--tk-emerald-400); cursor:pointer; text-decoration:underline;" onclick="document.querySelector('[data-tab=gallery]').click()">👉 前往「我的作品」查看進度</span>`
+                : `✅ 已成功加入隊列！<br><span style="font-size:0.8em; color:var(--tk-emerald-400); cursor:pointer; text-decoration:underline;" onclick="document.querySelector('[data-tab=gallery]').click()">👉 前往「我的作品」查看進度</span>`;
+
+            setTimeout(() => {
+                btn.disabled = false;
+                btn.innerHTML = '<span style="font-size: 1.2rem;">⚡</span> 生成 (Generate)';
+                statusContainer.classList.add('tk-hidden');
+            }, 4000);
+
+            // Force progress bar show
+            const bar = document.getElementById('tk-progress-area');
+            if (bar) bar.classList.remove('tk-hidden');
 
         } catch (e) {
             console.error(e);
@@ -537,8 +589,11 @@ export const ToolkitApp = {
         if (partialState.inputs) {
             this.stateCache[presetId].inputs = { ...this.stateCache[presetId].inputs, ...partialState.inputs };
         }
-        if (partialState.preview) {
+        if (partialState.preview !== undefined) {
             this.stateCache[presetId].preview = partialState.preview;
+        }
+        if (partialState.sizeMode !== undefined) {
+            this.stateCache[presetId].sizeMode = partialState.sizeMode;
         }
     },
 
@@ -551,30 +606,341 @@ export const ToolkitApp = {
     editingPresetId: null,
     currentWorkflow: null,
 
-    renderAdminPanel(container) {
+    // --- MODEL MANAGER ---
+
+    modelsCache: null,
+    editingModelId: null,
+
+    async loadModels() {
+        if (!this.modelsCache) {
+            try {
+                const res = await api.fetchApi('/tk/models');
+                if (res.status === 404) throw new Error("API Route Not Found");
+                this.modelsCache = await res.json();
+            } catch (e) {
+                console.warn("Failed to load models (API likely missing/reloading):", e);
+                this.modelsCache = []; // Fallback
+            }
+        }
+        return this.modelsCache;
+    },
+
+    async saveModels(models) {
+        await api.fetchApi('/tk/save_models', { method: 'POST', body: JSON.stringify(models) });
+        this.modelsCache = models;
+    },
+
+    async renderModelManager(container) {
+        console.log("[TK] renderModelManager called, container:", container);
+        const models = await this.loadModels();
+        console.log("[TK] Models loaded:", models);
+
+        container.innerHTML = `
+            <div class="tk-admin-section">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 1rem;">
+                    <h3 class="tk-sidebar-label" style="margin:0;">模型清單 (Models)</h3>
+                    <button class="tk-generate-btn" id="tk-add-model-btn" style="min-width:auto; padding:6px 12px; font-size:0.8rem;">+ 新增模型</button>
+                </div>
+                <div id="tk-model-list" style="display:flex; flex-direction:column; gap:12px;"></div>
+            </div>
+
+            <div id="tk-model-editor" class="tk-admin-section" style="display:none; margin-top: 2rem; border-top: 1px solid var(--tk-border); padding-top: 2rem;">
+                <h3 class="tk-sidebar-label">編輯模型</h3>
+                <div class="tk-form-group">
+                    <label class="tk-label">模型名稱 (Name)</label>
+                    <input type="text" id="tk-model-name" class="tk-input">
+                </div>
+                
+                <h4 class="tk-sidebar-label" style="margin-top:1.5rem;">比例尺寸 (Aspect Ratios)</h4>
+                <div style="display:grid; grid-template-columns: 1fr 80px 80px 40px; gap:8px; margin-bottom: 4px; padding-right: 8px;">
+                    <div style="font-size:0.7rem; color:var(--tk-zinc-500);">比例名稱</div>
+                    <div style="font-size:0.7rem; color:var(--tk-zinc-500);">寬 (W)</div>
+                    <div style="font-size:0.7rem; color:var(--tk-zinc-500);">高 (H)</div>
+                    <div></div>
+                </div>
+                <div id="tk-ratio-list" style="display:flex; flex-direction:column; gap:8px; margin-bottom:1rem;"></div>
+                <button class="tk-tab-btn" id="tk-add-ratio-btn" style="width:100%; justify-content:center; margin-bottom:1.5rem;">+ 新增尺寸</button>
+
+                <div style="display:flex; justify-content:flex-end; gap:1rem;">
+                    <button class="tk-tab-btn" id="tk-cancel-model-edit">取消</button>
+                    <button class="tk-generate-btn" id="tk-save-model-btn" style="min-width:120px;">保存模型</button>
+                </div>
+            </div>
+        `;
+        console.log("[TK] Model Manager HTML injected");
+
+        const listDiv = container.querySelector('#tk-model-list');
+        const editorDiv = container.querySelector('#tk-model-editor');
+
+        const renderList = () => {
+            listDiv.innerHTML = '';
+            if (!models || models.length === 0) {
+                listDiv.innerHTML = `
+                    <div style="text-align:center; padding:2rem; color:var(--tk-zinc-500);">
+                        <p>尚無模型資料</p>
+                        <button class="tk-tab-btn" id="tk-restore-defaults" style="margin-top:1rem; border:1px dashed var(--tk-zinc-600);">
+                            🔄 還原預設模型 (Restore Defaults)
+                        </button>
+                    </div>
+                `;
+                const btn = listDiv.querySelector('#tk-restore-defaults');
+                if (btn) btn.onclick = async () => {
+                    if (confirm("確定要重置為預設模型嗎？這將覆蓋現有設定。")) {
+                        const defaults = [
+                            {
+                                "id": "sd15",
+                                "name": "SD1.5",
+                                "ratios": [
+                                    { "name": "1:1", "width": 512, "height": 512 },
+                                    { "name": "2:3", "width": 512, "height": 768 },
+                                    { "name": "3:2", "width": 768, "height": 512 }
+                                ]
+                            },
+                            {
+                                "id": "sdxl",
+                                "name": "SDXL",
+                                "ratios": [
+                                    { "name": "1:1", "width": 1024, "height": 1024 },
+                                    { "name": "2:3", "width": 832, "height": 1216 },
+                                    { "name": "3:2", "width": 1216, "height": 832 },
+                                    { "name": "16:9", "width": 1344, "height": 768 },
+                                    { "name": "9:16", "width": 768, "height": 1344 },
+                                    { "name": "9:21", "width": 640, "height": 1536 },
+                                    { "name": "21:9", "width": 1536, "height": 640 }
+                                ]
+                            },
+                            {
+                                "id": "flux",
+                                "name": "FLUX",
+                                "ratios": [
+                                    { "name": "1:1", "width": 1448, "height": 1448 },
+                                    { "name": "2:3", "width": 1152, "height": 1728 },
+                                    { "name": "3:2", "width": 1728, "height": 1152 },
+                                    { "name": "16:9", "width": 1920, "height": 1088 },
+                                    { "name": "9:16", "width": 1088, "height": 1920 },
+                                    { "name": "9:21", "width": 960, "height": 2176 },
+                                    { "name": "21:9", "width": 2176, "height": 960 }
+                                ]
+                            },
+                            {
+                                "id": "qwen",
+                                "name": "QwenImage",
+                                "ratios": [
+                                    { "name": "1:1", "width": 1328, "height": 1328 },
+                                    { "name": "2:3", "width": 1056, "height": 1584 },
+                                    { "name": "3:2", "width": 1584, "height": 1056 },
+                                    { "name": "16:9", "width": 1664, "height": 928 },
+                                    { "name": "9:16", "width": 928, "height": 1664 }
+                                ]
+                            },
+                            {
+                                "id": "zimage",
+                                "name": "Zimage",
+                                "ratios": [
+                                    { "name": "1:1", "width": 1440, "height": 1440 },
+                                    { "name": "1:1", "width": 1024, "height": 1024 },
+                                    { "name": "2:3", "width": 1088, "height": 1600 },
+                                    { "name": "3:2", "width": 1600, "height": 1088 },
+                                    { "name": "16:9", "width": 1920, "height": 1088 },
+                                    { "name": "9:16", "width": 1088, "height": 1920 }
+                                ]
+                            },
+                            {
+                                "id": "wan",
+                                "name": "WAN",
+                                "ratios": [
+                                    { "name": "1:1", "width": 624, "height": 624 },
+                                    { "name": "2:3", "width": 384, "height": 576 },
+                                    { "name": "2:3", "width": 528, "height": 768 },
+                                    { "name": "2:3", "width": 624, "height": 912 },
+                                    { "name": "2:3", "width": 656, "height": 960 },
+                                    { "name": "2:3", "width": 736, "height": 1072 },
+                                    { "name": "2:3", "width": 784, "height": 1136 },
+                                    { "name": "3:2", "width": 752, "height": 512 },
+                                    { "name": "3:4", "width": 416, "height": 544 },
+                                    { "name": "3:4", "width": 560, "height": 720 },
+                                    { "name": "3:4", "width": 672, "height": 864 },
+                                    { "name": "3:4", "width": 720, "height": 912 },
+                                    { "name": "3:4", "width": 784, "height": 1008 },
+                                    { "name": "3:4", "width": 848, "height": 1088 },
+                                    { "name": "9:16", "width": 368, "height": 624 },
+                                    { "name": "9:16", "width": 480, "height": 848 },
+                                    { "name": "9:16", "width": 576, "height": 1008 },
+                                    { "name": "9:16", "width": 608, "height": 1072 },
+                                    { "name": "9:16", "width": 672, "height": 1184 },
+                                    { "name": "9:16", "width": 720, "height": 1264 },
+                                    { "name": "16:9", "width": 1280, "height": 720 },
+                                    { "name": "16:9", "width": 624, "height": 368 },
+                                    { "name": "16:9", "width": 848, "height": 480 },
+                                    { "name": "16:9", "width": 1008, "height": 576 },
+                                    { "name": "16:9", "width": 1072, "height": 608 },
+                                    { "name": "16:9", "width": 1184, "height": 672 },
+                                    { "name": "16:9", "width": 1264, "height": 720 }
+                                ]
+                            }
+                        ];
+                        models.length = 0;
+                        models.push(...defaults);
+                        await this.saveModels(models);
+                        renderList();
+                    }
+                };
+                return;
+            }
+
+            models.forEach(m => {
+                const item = document.createElement('div');
+                item.style.cssText = "display:flex; justify-content:space-between; align-items:center; background:rgba(39,39,42,0.4); padding:1rem; border-radius:8px; border:1px solid var(--tk-border);";
+                item.innerHTML = `
+                    <div>
+                        <div style="font-weight:600; color:var(--tk-zinc-200);">${m.name}</div>
+                        <div style="font-size:0.75rem; color:var(--tk-zinc-500);">${m.ratios.length} ratios</div>
+                    </div>
+                    <div style="display:flex; gap:6px;">
+                         <button class="tk-edit-mini" style="background:var(--tk-emerald-500); border:none; color:#000; padding:6px 12px; border-radius:6px; cursor:pointer; font-size:11px; font-weight:700;">編輯</button>
+                         <button class="tk-del-mini" style="background:rgba(239,68,68,0.2); border:1px solid rgba(239,68,68,0.3); color:#f87171; padding:6px 12px; border-radius:6px; cursor:pointer; font-size:11px; font-weight:600;">刪除</button>
+                    </div>
+                `;
+                item.querySelector('.tk-edit-mini').onclick = () => openEditor(m);
+                item.querySelector('.tk-del-mini').onclick = async () => {
+                    if (confirm(`刪除模型 ${m.name}?`)) {
+                        const idx = models.indexOf(m);
+                        if (idx > -1) {
+                            models.splice(idx, 1);
+                            await this.saveModels(models);
+                            renderList();
+                        }
+                    }
+                };
+                listDiv.appendChild(item);
+            });
+        };
+
+        const renderRatios = (ratios) => {
+            const ratioList = container.querySelector('#tk-ratio-list');
+            ratioList.innerHTML = '';
+            ratios.forEach((r, idx) => {
+                const row = document.createElement('div');
+                row.style.cssText = "display:grid; grid-template-columns: 1fr 80px 80px 40px; gap:8px; align-items:center;";
+                row.innerHTML = `
+                    <input type="text" class="tk-input ratio-name" value="${r.name}" placeholder="Name (e.g. 1:1)">
+                    <input type="number" class="tk-input ratio-w" value="${r.width}" placeholder="W">
+                    <input type="number" class="tk-input ratio-h" value="${r.height}" placeholder="H">
+                    <button class="tk-del-mini" style="background:rgba(239,68,68,0.2); border:none; color:#f87171; width:32px; height:32px; border-radius:4px; cursor:pointer;">×</button>
+                `;
+                row.querySelector('.tk-del-mini').onclick = () => {
+                    row.remove();
+                };
+                ratioList.appendChild(row);
+            });
+        };
+
+        const openEditor = (model) => {
+            this.editingModelId = model ? model.id : null;
+            editorDiv.style.display = 'block';
+
+            const nameInput = container.querySelector('#tk-model-name');
+
+            if (model) {
+                nameInput.value = model.name;
+                renderRatios(JSON.parse(JSON.stringify(model.ratios))); // Deep copy
+            } else {
+                nameInput.value = '';
+                renderRatios([]);
+            }
+        };
+
+        container.querySelector('#tk-add-model-btn').onclick = () => openEditor(null);
+
+        container.querySelector('#tk-add-ratio-btn').onclick = () => {
+            const ratioList = container.querySelector('#tk-ratio-list');
+            const row = document.createElement('div');
+            row.style.cssText = "display:grid; grid-template-columns: 1fr 80px 80px 40px; gap:8px; align-items:center;";
+            row.innerHTML = `
+                <input type="text" class="tk-input ratio-name" placeholder="Name">
+                <input type="number" class="tk-input ratio-w" placeholder="W">
+                <input type="number" class="tk-input ratio-h" placeholder="H">
+                <button class="tk-del-mini" style="background:rgba(239,68,68,0.2); border:none; color:#f87171; width:32px; height:32px; border-radius:4px; cursor:pointer;">×</button>
+            `;
+            row.querySelector('.tk-del-mini').onclick = () => row.remove();
+            ratioList.appendChild(row);
+        };
+
+        container.querySelector('#tk-cancel-model-edit').onclick = () => {
+            editorDiv.style.display = 'none';
+            this.editingModelId = null;
+        };
+
+        container.querySelector('#tk-save-model-btn').onclick = async () => {
+            const name = container.querySelector('#tk-model-name').value.trim();
+            if (!name) {
+                alert('請輸入模型名稱');
+                return;
+            }
+            // Auto-generate ID from name (lowercase, spaces to underscores)
+            const id = this.editingModelId || name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+
+            // Gather ratios
+            const ratios = [];
+            container.querySelectorAll('#tk-ratio-list > div').forEach(row => {
+                const rName = row.querySelector('.ratio-name').value;
+                const rW = parseInt(row.querySelector('.ratio-w').value);
+                const rH = parseInt(row.querySelector('.ratio-h').value);
+                if (rName && rW && rH) ratios.push({ name: rName, width: rW, height: rH });
+            });
+
+            const newModel = { id, name, ratios };
+
+            if (this.editingModelId) {
+                // Update existing
+                const idx = models.findIndex(m => m.id === this.editingModelId);
+                if (idx > -1) models[idx] = newModel;
+            } else {
+                // Add new
+                models.push(newModel);
+            }
+
+            await this.saveModels(models);
+            editorDiv.style.display = 'none';
+            renderList();
+        };
+
+        renderList();
+    },
+
+    async renderAdminPanel(container) {
+        // Ensure models are loaded for the dropdown
+        await this.loadModels();
+
         container.innerHTML = `
             <div class="tk-admin-panel animate-in fade-in duration-300">
                 <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom: 2rem;">
                     <div>
                         <h2 class="tk-admin-title" style="margin:0;">工作流管理員</h2>
-                        <p style="font-size: 0.875rem; color: var(--tk-zinc-500);">配置預設工作流、參數可見性與默認值。</p>
+                        <div style="display:flex; gap:1rem; margin-top:0.5rem;">
+                            <button class="tk-tab-btn active" id="tk-admin-tab-presets" style="font-size:0.9rem;">工作流預設</button>
+                            <button class="tk-tab-btn" id="tk-admin-tab-models" style="font-size:0.9rem;">模型管理</button>
+                        </div>
                     </div>
-                    <button class="tk-generate-btn" id="tk-trigger-upload" style="min-width: unset; padding: 0.6rem 1.2rem; background: rgba(16, 185, 129, 0.1); color: var(--tk-emerald-400); border: 1px solid rgba(16, 185, 129, 0.3);">
-                        📤 上傳 JSON
-                    </button>
-                    <input type="file" id="tk-upload-json" accept=".json" style="display:none;">
                 </div>
 
-                <div style="display:grid; grid-template-columns: 320px 1fr; gap: 2rem;">
-                    <!-- Left Pane: Manage -->
+                <!-- VIEW: PRESETS -->
+                <div id="tk-admin-view-presets" style="display:grid; grid-template-columns: 320px 1fr; gap: 2rem;">
+                    
                     <div class="tk-admin-section">
-                        <h3 class="tk-sidebar-label">已保存預設</h3>
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+                            <h3 class="tk-sidebar-label" style="margin:0;">已保存預設</h3>
+                             <button class="tk-generate-btn" id="tk-trigger-upload" style="min-width: unset; padding: 0.4rem 0.8rem; font-size:0.75rem; background: rgba(16, 185, 129, 0.1); color: var(--tk-emerald-400); border: 1px solid rgba(16, 185, 129, 0.3);">
+                                📤 上傳 JSON
+                            </button>
+                            <input type="file" id="tk-upload-json" accept=".json" style="display:none;">
+                        </div>
                         <div id="tk-admin-preset-list" style="display:flex; flex-direction:column; gap:8px;">
                             Loading...
                         </div>
                     </div>
 
-                    <!-- Right Pane: Config -->
+                    <!-- Config Area -->
                     <div id="tk-config-area" class="tk-admin-section tk-hidden">
                         <div style="display:flex; align-items:center; gap:0.5rem; color: var(--tk-emerald-400); margin-bottom:1.5rem;">
                             <span style="font-size: 1.25rem;">⚙️</span>
@@ -599,6 +965,23 @@ export const ToolkitApp = {
                                     <option value="rev_video">影片反推 (Rev Vid)</option>
                                 </select>
                             </div>
+                         </div>
+                         
+                         <div class="tk-form-group" style="margin-bottom: 2rem;">
+                            <label class="tk-label">使用模型 (用於比例選擇)</label>
+                            <select id="tk-config-model" class="tk-input">
+                                <option value="">(無) 自行輸入尺寸</option>
+                                ${this.modelsCache ? this.modelsCache.map(m => `<option value="${m.id}">${m.name}</option>`).join('') : ''}
+                            </select>
+                            <p style="font-size:0.75rem; color:var(--tk-zinc-500); margin-top:4px;">選擇此工作流使用的基礎模型，以便用戶可以使用預設的比例尺寸。</p>
+                        </div>
+
+                        <div class="tk-form-group" style="margin-bottom: 2rem;">
+                            <label class="tk-label" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                                <input type="checkbox" id="tk-config-allow-batch" style="accent-color: var(--tk-emerald-500); width:16px; height:16px;">
+                                <span>是否允許用戶生成多張圖片? (Allow Batch Config)</span>
+                            </label>
+                            <p style="font-size:0.75rem; color:var(--tk-zinc-500); margin-top:4px; margin-left:24px;">若勾選，用戶可在生成前選擇批量生成數量 (2-10張)。</p>
                         </div>
 
                         <div class="tk-form-group" style="margin-bottom: 2rem;">
@@ -619,10 +1002,41 @@ export const ToolkitApp = {
                         </div>
                     </div>
                 </div>
+
+                <!-- VIEW: MODELS -->
+                <div id="tk-admin-view-models" style="display:none; grid-template-columns: 1fr; gap: 2rem;">
+                    <!-- Model Manager injected here -->
+                </div>
             </div>
         `;
 
-        // Bind Actions
+        // Bind Tabs
+        const tabPresets = container.querySelector('#tk-admin-tab-presets');
+        const tabModels = container.querySelector('#tk-admin-tab-models');
+        const viewPresets = container.querySelector('#tk-admin-view-presets');
+        const viewModels = container.querySelector('#tk-admin-view-models');
+
+        tabPresets.onclick = () => {
+            tabPresets.classList.add('active');
+            tabModels.classList.remove('active');
+            viewPresets.style.display = 'grid';
+            viewModels.style.display = 'none';
+        };
+
+        tabModels.onclick = () => {
+            console.log("[TK] Model Tab Clicked");
+            tabModels.classList.add('active');
+            tabPresets.classList.remove('active');
+            viewModels.style.display = 'grid';
+            viewPresets.style.display = 'none';
+            // Initialize Model Manager View if not already initialized
+            if (!viewModels.dataset.initialized) {
+                viewModels.dataset.initialized = 'true';
+                this.renderModelManager(viewModels);
+            }
+        };
+
+        // Bind Actions (Presets)
         const fileInput = container.querySelector('#tk-upload-json');
         container.querySelector('#tk-trigger-upload').onclick = () => fileInput.click();
         fileInput.onchange = (e) => this.handleJsonUpload(e.target.files[0]);
@@ -744,6 +1158,8 @@ export const ToolkitApp = {
 
         document.getElementById('tk-config-name').value = preset.name;
         document.getElementById('tk-config-category').value = preset.category;
+        document.getElementById('tk-config-model').value = preset.modelUsage || '';
+        document.getElementById('tk-config-allow-batch').checked = !!preset.allowBatch;
         document.getElementById('tk-config-image').value = preset.previewImageUrl;
         document.getElementById('tk-config-title').textContent = "編輯預設項目";
 
@@ -772,6 +1188,8 @@ export const ToolkitApp = {
                 this.currentWorkflow = json;
                 this.parseAndShowConfig(json);
                 document.getElementById('tk-config-name').value = '';
+                document.getElementById('tk-config-model').value = '';
+                document.getElementById('tk-config-allow-batch').checked = false;
                 document.getElementById('tk-config-image').value = '';
             } catch (err) { alert("無效的 JSON 檔案"); }
         };
@@ -825,6 +1243,8 @@ export const ToolkitApp = {
     async savePreset() {
         const name = document.getElementById('tk-config-name').value;
         const category = document.getElementById('tk-config-category').value;
+        const modelUsage = document.getElementById('tk-config-model').value;
+        const allowBatch = document.getElementById('tk-config-allow-batch').checked;
         const image = document.getElementById('tk-config-image').value;
 
         if (!name) { alert("請輸入名稱"); return; }
@@ -861,6 +1281,9 @@ export const ToolkitApp = {
             id: this.editingPresetId || this.uuidv4(),
             name,
             category,
+            category,
+            modelUsage,
+            allowBatch,
             previewImageUrl: image,
             workflow: this.currentWorkflow,
             parameters
