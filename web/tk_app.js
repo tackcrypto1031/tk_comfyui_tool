@@ -265,65 +265,117 @@ export const ToolkitApp = {
                 }
             }
 
-            statusMsg.textContent = "📡 正在發送到 ComfyUI...";
 
-            const p = {
-                prompt: workflow,
-                client_id: api.clientId
-            };
+            // --- BATCH CONFIRMATION & VALIDATION ---
+            const batchToggle = document.getElementById('tk-batch-toggle');
+            const isBatch = batchToggle && batchToggle.checked;
+            let batchCount = 1;
 
-            const response = await api.fetchApi('/prompt', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(p)
-            });
-
-            if (response.ok) {
-                const resData = await response.json();
-
-                // Save to history
-                try {
-                    await api.fetchApi('/tk/save_history', {
-                        method: 'POST',
-                        body: JSON.stringify({
-                            id: this.uuidv4(),
-                            prompt_id: resData.prompt_id,
-                            preset_name: preset.name,
-                            timestamp: Date.now(),
-                            workflow: workflow, // Save the Modified workflow with user inputs
-                            status: 'queued'
-                        })
-                    });
-                } catch (err) { console.error("Failed to save history", err); }
-
-                // Set current prompt ID for onExecuted listener
-                this.currentPromptId = resData.prompt_id;
-                this.currentPresetId = preset.id; // Track which preset started this
-
-                statusMsg.innerHTML = `✅ 已成功加入隊列！<br><span style="font-size:0.8em; color:var(--tk-emerald-400); cursor:pointer; text-decoration:underline;" onclick="document.querySelector('[data-tab=gallery]').click()">👉 前往「我的作品」查看進度</span>`;
-
-                setTimeout(() => {
+            if (isBatch) {
+                const countInput = document.getElementById('tk-batch-count');
+                batchCount = parseInt(countInput.value);
+                if (isNaN(batchCount) || batchCount < 2 || batchCount > 10 || !Number.isInteger(batchCount)) {
+                    alert('批量生成數量必須在 2 到 10 之間 (整數)。');
                     btn.disabled = false;
-                    btn.innerHTML = '<span style="font-size: 1.2rem;">⚡</span> 生成 (Generate)';
+                    btn.innerHTML = '重試 (Retry)';
                     statusContainer.classList.add('tk-hidden');
-                }, 4000);
-
-                // Force progress bar show
-                const bar = document.getElementById('tk-progress-area');
-                if (bar) bar.classList.remove('tk-hidden');
-
-            } else {
-                let errText = response.statusText;
-                try {
-                    const errJson = await response.json();
-                    if (errJson && errJson.error) errText = JSON.stringify(errJson.error);
-                    else if (errJson) errText = JSON.stringify(errJson);
-                } catch (e2) {
-                    const txt = await response.text();
-                    if (txt) errText = txt;
+                    return;
                 }
-                throw new Error(`API Error ${response.status}: ${errText}`);
             }
+
+            // --- EXECUTION LOOP ---
+            for (let i = 0; i < batchCount; i++) {
+                if (isBatch) {
+                    statusMsg.textContent = `📡 正在發送批量任務 (${i + 1}/${batchCount})...`;
+                } else {
+                    statusMsg.textContent = "📡 正在發送到 ComfyUI...";
+                }
+
+                // 1. Clone Workflow for this iteration
+                // For batch, we perform fresh randomization. For single, we use 'workflow' as already prepared (with user seed).
+                // However, to keep logic clean, if batch, we clone and randomize. 
+                // If single, we just use 'workflow'.
+                let currentWorkflow = workflow;
+
+                if (isBatch) {
+                    currentWorkflow = JSON.parse(JSON.stringify(workflow));
+                    // Force Randomize Seeds
+                    for (const nid in currentWorkflow) {
+                        const n = currentWorkflow[nid];
+                        if (n.inputs) {
+                            if (n.inputs['seed'] !== undefined) n.inputs['seed'] = Math.floor(Math.random() * 100000000000000);
+                            if (n.inputs['noise_seed'] !== undefined) n.inputs['noise_seed'] = Math.floor(Math.random() * 100000000000000);
+                        }
+                    }
+                }
+
+                const p = {
+                    prompt: currentWorkflow,
+                    client_id: api.clientId
+                };
+
+                const response = await api.fetchApi('/prompt', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(p)
+                });
+
+                if (response.ok) {
+                    const resData = await response.json();
+
+                    // Save to history
+                    try {
+                        await api.fetchApi('/tk/save_history', {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                id: this.uuidv4(),
+                                prompt_id: resData.prompt_id,
+                                preset_name: preset.name,
+                                timestamp: Date.now(),
+                                workflow: currentWorkflow, // Save the specific one
+                                status: 'queued'
+                            })
+                        });
+                    } catch (err) { console.error("Failed to save history", err); }
+
+                    // Set current prompt ID for onExecuted listener
+                    // In batch mode, this might overwrite quickly, but it ensures at least the last one triggers the preview or loading logic.
+                    this.currentPromptId = resData.prompt_id;
+                    this.currentPresetId = preset.id;
+
+                } else {
+                    let errText = response.statusText;
+                    try {
+                        const errJson = await response.json();
+                        if (errJson && errJson.error) errText = JSON.stringify(errJson.error);
+                        else if (errJson) errText = JSON.stringify(errJson);
+                    } catch (e2) {
+                        const txt = await response.text();
+                        if (txt) errText = txt;
+                    }
+                    throw new Error(`API Error ${response.status}: ${errText}`);
+                }
+
+                // Small delay between batch submissions to ensure order and avoid overwhelm
+                if (isBatch && i < batchCount - 1) {
+                    await new Promise(r => setTimeout(r, 250));
+                }
+            }
+
+            // --- SUCCESS STATE (After all submitted) ---
+            statusMsg.innerHTML = isBatch
+                ? `✅ 已成功加入批量隊列 (${batchCount}張)！<br><span style="font-size:0.8em; color:var(--tk-emerald-400); cursor:pointer; text-decoration:underline;" onclick="document.querySelector('[data-tab=gallery]').click()">👉 前往「我的作品」查看進度</span>`
+                : `✅ 已成功加入隊列！<br><span style="font-size:0.8em; color:var(--tk-emerald-400); cursor:pointer; text-decoration:underline;" onclick="document.querySelector('[data-tab=gallery]').click()">👉 前往「我的作品」查看進度</span>`;
+
+            setTimeout(() => {
+                btn.disabled = false;
+                btn.innerHTML = '<span style="font-size: 1.2rem;">⚡</span> 生成 (Generate)';
+                statusContainer.classList.add('tk-hidden');
+            }, 4000);
+
+            // Force progress bar show
+            const bar = document.getElementById('tk-progress-area');
+            if (bar) bar.classList.remove('tk-hidden');
 
         } catch (e) {
             console.error(e);
@@ -850,7 +902,15 @@ export const ToolkitApp = {
                                 <option value="">(無) 自行輸入尺寸</option>
                                 ${this.modelsCache ? this.modelsCache.map(m => `<option value="${m.id}">${m.name}</option>`).join('') : ''}
                             </select>
-                             <p style="font-size:0.75rem; color:var(--tk-zinc-500); margin-top:4px;">選擇此工作流使用的基礎模型，以便用戶可以使用預設的比例尺寸。</p>
+                            <p style="font-size:0.75rem; color:var(--tk-zinc-500); margin-top:4px;">選擇此工作流使用的基礎模型，以便用戶可以使用預設的比例尺寸。</p>
+                        </div>
+
+                        <div class="tk-form-group" style="margin-bottom: 2rem;">
+                            <label class="tk-label" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                                <input type="checkbox" id="tk-config-allow-batch" style="accent-color: var(--tk-emerald-500); width:16px; height:16px;">
+                                <span>是否允許用戶生成多張圖片? (Allow Batch Config)</span>
+                            </label>
+                            <p style="font-size:0.75rem; color:var(--tk-zinc-500); margin-top:4px; margin-left:24px;">若勾選，用戶可在生成前選擇批量生成數量 (2-10張)。</p>
                         </div>
 
                         <div class="tk-form-group" style="margin-bottom: 2rem;">
@@ -1028,6 +1088,7 @@ export const ToolkitApp = {
         document.getElementById('tk-config-name').value = preset.name;
         document.getElementById('tk-config-category').value = preset.category;
         document.getElementById('tk-config-model').value = preset.modelUsage || '';
+        document.getElementById('tk-config-allow-batch').checked = !!preset.allowBatch;
         document.getElementById('tk-config-image').value = preset.previewImageUrl;
         document.getElementById('tk-config-title').textContent = "編輯預設項目";
 
@@ -1057,6 +1118,7 @@ export const ToolkitApp = {
                 this.parseAndShowConfig(json);
                 document.getElementById('tk-config-name').value = '';
                 document.getElementById('tk-config-model').value = '';
+                document.getElementById('tk-config-allow-batch').checked = false;
                 document.getElementById('tk-config-image').value = '';
             } catch (err) { alert("無效的 JSON 檔案"); }
         };
@@ -1111,6 +1173,7 @@ export const ToolkitApp = {
         const name = document.getElementById('tk-config-name').value;
         const category = document.getElementById('tk-config-category').value;
         const modelUsage = document.getElementById('tk-config-model').value;
+        const allowBatch = document.getElementById('tk-config-allow-batch').checked;
         const image = document.getElementById('tk-config-image').value;
 
         if (!name) { alert("請輸入名稱"); return; }
@@ -1147,7 +1210,9 @@ export const ToolkitApp = {
             id: this.editingPresetId || this.uuidv4(),
             name,
             category,
+            category,
             modelUsage,
+            allowBatch,
             previewImageUrl: image,
             workflow: this.currentWorkflow,
             parameters

@@ -473,7 +473,23 @@ export const ToolkitUI = {
                         </div>
                     </div>
 
-                    <div class="tk-action-bar">
+                    <div class="tk-action-bar" style="flex-direction: column; gap: 1rem;">
+                        ${preset.allowBatch ? `
+                        <div style="width:100%; padding: 12px; background: rgba(39, 39, 42, 0.4); border: 1px solid var(--tk-border); border-radius: 8px; transition: all 0.3s;">
+                            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--tk-zinc-300); font-weight: 500; user-select: none;">
+                                <input type="checkbox" id="tk-batch-toggle" style="accent-color: var(--tk-emerald-500); width:16px; height:16px;" onchange="document.getElementById('tk-batch-config').classList.toggle('tk-hidden', !this.checked); if(this.checked) document.querySelector('.tk-form-container').scrollTop = document.querySelector('.tk-form-container').scrollHeight;">
+                                <span>🚀 批量生成 (Batch Generation)</span>
+                            </label>
+                            <div id="tk-batch-config" class="tk-hidden" style="margin-top: 12px; padding-left: 4px; border-top: 1px solid var(--tk-border); padding-top: 12px; animation: tk-fade-in 0.2s;">
+                                <div style="display:flex; align-items:center; gap:12px;">
+                                    <span style="font-size: 0.85rem; color: var(--tk-zinc-400);">生成張數 (Count):</span>
+                                    <input type="number" id="tk-batch-count" value="2" min="2" max="10" step="1" class="tk-input" style="width: 100px;">
+                                    <span style="font-size: 0.75rem; color: var(--tk-zinc-500);">(2 - 10)</span>
+                                </div>
+                                <p style="font-size: 0.75rem; color: var(--tk-emerald-500); margin-top: 6px; opacity: 0.8;">ℹ️ 每一張圖片將使用不同的隨機種子</p>
+                            </div>
+                        </div>
+                        ` : ''}
                         <div id="tk-status-container" class="tk-hidden">
                              <div id="tk-status-msg" class="tk-status-msg"></div>
                         </div>
