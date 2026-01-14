@@ -77,4 +77,4 @@ ComfyUI Toolkit 是一款「應用層封裝框架」，旨在縮短工作流開�
 
 ---
 
-*Made with 🍌 by the TK Team.*
+*Made with 🍌 by Tack (tack1031@gmail.com).*

@@ -77,4 +77,4 @@ This project is licensed under the [MIT License](./LICENSE).
 
 ---
 
-*Made with 🍌 by the TK Team.*
+*Made with 🍌 by Tack (tack1031@gmail.com).*
