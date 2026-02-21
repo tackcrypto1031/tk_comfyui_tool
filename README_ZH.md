@@ -18,6 +18,67 @@ ComfyUI Toolkit 是一款「應用層封裝框架」，旨在縮短工作流開�
 - **🕒 即時歷史紀錄**：內建生成歷史功能，支援即時預覽與參數回填。
 - **🚀 一鍵執行**：與 ComfyUI API 無縫整合，實現低延遲的任務排隊。
 
+## 🔧 近期修正（2026-02-21）
+
+- **檔案路徑安全強化**：
+  - 針對檔名新增安全化處理與目錄邊界檢查，避免路徑穿越（Path Traversal）。
+  - 已套用於工作流上傳、預覽圖上傳、以及本地上傳圖片的讀取端點。
+- **歷史紀錄行為可設定**：
+  - 啟動時預設改為 **保留歷史紀錄**。
+  - 管理員介面新增 **「啟動時清空歷史紀錄」** 開關。
+  - 後端新增設定 API：`GET /tk/settings`、`POST /tk/save_settings`。
+- **鏈式工作流驗證加強**：
+  - 後端新增 `nextWorkflows` 驗證，防止：
+    - 指向自己（self-reference）、
+    - 指向非 `post_image` 類別工作流、
+    - 形成循環依賴（cycle）。
+  - 即使繞過前端檢查，API 也會阻擋不合法資料。
+- **執行穩定性提升**：
+  - 在需要圖片輸入時，對 `LoadImageFromPath` 增加必填路徑檢查。
+  - 移除鏈式執行前脆弱的輸出節點白名單，改為依實際執行輸出判斷。
+- **歷史回填更準確**：
+  - 歷史紀錄新增儲存 `preset_id`。
+  - 還原「做同款」時，優先以 `preset_id` 匹配，再退回 `preset_name`。
+- **前端安全與可維護性整理**：
+  - 移除 `tk_app.js` 內重複定義的 `openImageModal`。
+  - Gallery 降低 inline click handler 依賴，並補上動態文字/屬性轉義。
+- **第三輪穩定性/安全修正**：
+  - 刪除 preset 時，會自動清理其他 preset 中失效的 `nextWorkflows` 參照。
+  - Modal 與文字預覽改為安全文字輸出，避免原樣 HTML 注入。
+  - 管理員「後續工作流」選單改為 DOM 建立 option，避免字串拼接 HTML 風險。
+  - 表單渲染與 inline handler 的動態值改為轉義輸出，降低不可信 workflow 資料造成注入的風險。
+- **第四輪可維護性重構（行為等價）**：
+  - 將使用者/管理員表單中剩餘 inline handler（`onclick`/`onchange`/拖放屬性）改為 JS 集中事件綁定。
+  - 將圖片 fallback 的 inline `onerror` 改為程式化綁定。
+  - 在不改流程與互動行為前提下，降低 CSP 相容阻力並提升維護性。
+- **第五輪安全強化（管理員參數面板）**：
+  - 將 `parseAndShowConfig` 的管理員節點/參數渲染，從字串 `innerHTML` 拼接改為 DOM 安全建立（`textContent`/`value`/`dataset`）。
+  - 避免 workflow 來源的節點名稱、參數名稱、預設值被瀏覽器當成可執行 HTML 解讀。
+- **第六輪安全強化（模型管理介面）**：
+  - 模型列表、比例編輯列、管理員模型下拉選單中的動態資料改為安全轉義輸出。
+  - 補上 `ratios` 缺失或格式異常時的防禦式處理，避免模型編輯器因壞資料崩潰。
+- **第七輪安全強化（尺寸選單渲染）**：
+  - 將 `tk_ui.js` 中解析度 option 的渲染，從字串拼接 `innerHTML` 改為 DOM 建立 option。
+  - 避免模型來源的寬高值在尺寸選單中成為 HTML 注入向量。
+- **第八輪顯示穩定性（LoadImageFromPath 預覽）**：
+  - 為 `LoadImageFromPath` 輸入加入路徑感知的預覽來源選擇。
+  - 遇到絕對路徑時，優先嘗試 `/tk/view_upload/{basename}`，失敗再 fallback 到 `/view`，仍失敗則改顯示占位圖示。
+- **第九輪選擇器穩定性（特殊字元安全 dataset 查找）**：
+  - 將 `tk_app.js` 中由 node/input 動態拼接的 attribute selector，改為 dataset 比對 helper。
+  - 避免 ID/鍵名含引號、中括號或其他特殊符號時 selector 失效，提升回填、上傳、seed 切換等流程穩定性。
+- **第十輪全量 review 一次性修正**：
+  - 修正上傳後程式化賦值僅觸發 `input` 導致狀態未保存問題，改為同步觸發 `input` 與 `change`。
+  - 將 `loadHistorySettings` 從 `setTimeout` 時序依賴改為可等待的渲染流程，並補上來源 workflow 安全處理。
+  - 收緊鏈式接圖目標判定：移除「任意 scalar 欄位」fallback，僅允許已知圖片路徑鍵。
+  - 由執行歷史組合 Comfy `/view` 圖片 URL 時，補上各段編碼處理。
+  - 強化模型管理器的模型 ID 產生邏輯（處理空 ID 與重複 ID）。
+  - 後端新增 `save_models/get_models` 的 models 結構驗證、正規化與壞資料回復邏輯。
+
+### ✅ 驗證結果
+
+- Python 單元測試：`13/13` 通過（`tests/test_tack_server.py`）
+- JS 工具測試：`6/6` 通過（`tests/tk_workflow_utils.test.mjs`）
+
 ---
 
 ## 🛠️ 安裝說明

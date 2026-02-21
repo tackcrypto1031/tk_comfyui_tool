@@ -3,6 +3,52 @@ import { ToolkitApp } from "./tk_app.js";
 export const ToolkitUI = {
     isOpen: false,
 
+    escapeHtml(value) {
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    },
+
+    escapeAttr(value) {
+        return this.escapeHtml(value).replace(/`/g, '&#96;');
+    },
+
+    isAbsolutePath(value) {
+        const str = String(value ?? '');
+        return /^[A-Za-z]:[\\/]/.test(str) || str.startsWith('/');
+    },
+
+    basenameFromPath(value) {
+        const normalized = String(value ?? '').replace(/\\/g, '/');
+        const parts = normalized.split('/');
+        return parts[parts.length - 1] || '';
+    },
+
+    buildInputPreviewSources(nodeClass, rawValue) {
+        const value = String(rawValue ?? '').trim();
+        if (!value) return { primary: '', fallback: '' };
+
+        const standardView = `/view?filename=${encodeURIComponent(value)}&type=input`;
+        if (nodeClass !== 'LoadImageFromPath') {
+            return { primary: standardView, fallback: '' };
+        }
+
+        if (this.isAbsolutePath(value)) {
+            const fileName = this.basenameFromPath(value);
+            if (fileName) {
+                return {
+                    primary: `/tk/view_upload/${encodeURIComponent(fileName)}`,
+                    fallback: standardView,
+                };
+            }
+        }
+
+        return { primary: standardView, fallback: '' };
+    },
+
     open() {
         if (this.isOpen) return;
         this.createModal();
@@ -92,7 +138,8 @@ export const ToolkitUI = {
 
     currentPresets: [], // Local cache for filtering
 
-    switchTab(tabName) {
+    switchTab(tabName, options = {}) {
+        const { skipLoad = false } = options;
         document.querySelectorAll('.tk-tab-btn').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.tab === tabName);
         });
@@ -110,6 +157,7 @@ export const ToolkitUI = {
             ToolkitApp.renderGallery(mainPanel);
         } else {
             sidebar.classList.remove('tk-hidden');
+            if (skipLoad) return;
             // Show loading if cache is empty or it's a new category
             const currentCat = sidebar.dataset.category;
             if (currentCat !== tabName || !ToolkitApp.presetsCache) {
@@ -150,11 +198,18 @@ export const ToolkitUI = {
                     <p style="color: var(--tk-zinc-500); max-width: 300px; font-size: 0.875rem; line-height: 1.5; margin-bottom: 2rem;">
                         您需要先前往管理員模式上傳或配置工作流，才能在這裡看到它們。
                     </p>
-                    <button class="tk-generate-btn" style="min-width: 180px;" onclick="document.querySelector('[data-tab=admin]').click()">
+                    <button class="tk-generate-btn tk-open-admin-btn" style="min-width: 180px;">
                         前往管理員模式
                     </button>
                 </div>
             `;
+            const openAdminBtn = mainPanel.querySelector('.tk-open-admin-btn');
+            if (openAdminBtn) {
+                openAdminBtn.onclick = () => {
+                    const adminTab = document.querySelector('[data-tab=admin]');
+                    if (adminTab) adminTab.click();
+                };
+            }
             return;
         }
 
@@ -164,6 +219,7 @@ export const ToolkitUI = {
             't2i': '文生圖',
             'i2i': '圖生圖',
             'edit': '圖片編輯',
+            'post_image': '圖片後處理',
             't2v': '文生影片',
             'i2v': '圖生影片',
             'v2v': '影片生影片',
@@ -179,7 +235,7 @@ export const ToolkitUI = {
 
         // 1. Group items
         const groups = {};
-        const orderMap = ['t2i', 'i2i', 'edit', 't2v', 'i2v', 'v2v', 'rev_image', 'rev_video']; // Order of appearance
+        const orderMap = ['t2i', 'i2i', 'edit', 'post_image', 't2v', 'i2v', 'v2v', 'rev_image', 'rev_video']; // Order of appearance
 
         presets.forEach(p => {
             const cat = p.category;
@@ -205,11 +261,13 @@ export const ToolkitUI = {
                 groups[catKey].forEach(p => {
                     const card = document.createElement('div');
                     card.className = 'tk-preset-card';
+                    const safePresetName = this.escapeHtml(p.name || '');
+                    const safePreviewImageUrl = this.escapeAttr(p.previewImageUrl || '');
 
                     // Banana Fallback Logic
                     let imgHtml = '';
                     if (p.previewImageUrl) {
-                        imgHtml = `<img src="${p.previewImageUrl}" class="tk-preset-thumb" loading="lazy" onerror="this.parentElement.innerHTML='<div class=\\'tk-preset-thumb\\' style=\\'display:flex;align-items:center;justify-content:center;font-size:1.5rem;background:#18181b;\\'>🍌</div>'">`;
+                        imgHtml = `<img src="${safePreviewImageUrl}" class="tk-preset-thumb" loading="lazy">`;
                     } else {
                         imgHtml = `<div class="tk-preset-thumb" style="display:flex;align-items:center;justify-content:center;font-size:1.5rem;background:#18181b;">🍌</div>`;
                     }
@@ -217,7 +275,7 @@ export const ToolkitUI = {
                     card.innerHTML = `
                         ${imgHtml}
                         <div class="tk-preset-info">
-                            <span class="tk-preset-name">${p.name}</span>
+                            <span class="tk-preset-name">${safePresetName}</span>
                             <span class="tk-preset-meta">工作流已就緒</span>
                         </div>
                         <span style="color: #3f3f46; font-size: 0.75rem;">➔</span>
@@ -230,6 +288,16 @@ export const ToolkitUI = {
                     };
 
                     card.onclick = selectPreset;
+                    const thumbImg = card.querySelector('img.tk-preset-thumb');
+                    if (thumbImg) {
+                        thumbImg.onerror = () => {
+                            const fallback = document.createElement('div');
+                            fallback.className = 'tk-preset-thumb';
+                            fallback.style.cssText = 'display:flex;align-items:center;justify-content:center;font-size:1.5rem;background:#18181b;';
+                            fallback.textContent = '🍌';
+                            thumbImg.replaceWith(fallback);
+                        };
+                    }
                     sidebarList.appendChild(card);
                 });
             }
@@ -256,7 +324,7 @@ export const ToolkitUI = {
         const inputsState = savedState ? savedState.inputs : {};
         const sizeMode = (savedState && savedState.sizeMode) ? savedState.sizeMode : 'ratio'; // 'ratio' or 'custom'
 
-        const visibleParams = preset.parameters.filter(p => p.visible);
+        const visibleParams = (Array.isArray(preset.parameters) ? preset.parameters : []).filter(p => p.visible);
 
         // --- SIZE SELECTION LOGIC ---
         let widthParam = null;
@@ -281,6 +349,21 @@ export const ToolkitUI = {
         };
 
         const renderParamHtml = (p) => {
+            const nodeIdRaw = String(p.nodeId ?? '');
+            const inputNameRaw = String(p.inputName ?? '');
+            const nodeClassRaw = String(p.nodeClass || '');
+            const presetIdRaw = String(preset.id ?? '');
+            const stateKeyRaw = `${nodeIdRaw}_${inputNameRaw}`;
+            const currentValueRaw = inputsState[stateKeyRaw] !== undefined ? inputsState[stateKeyRaw] : (p.defaultValue ?? '');
+            const displayNameRaw = String(p.displayName ?? p.inputName ?? '');
+
+            const safeDisplayName = this.escapeHtml(displayNameRaw);
+            const safeNodeIdAttr = this.escapeAttr(nodeIdRaw);
+            const safeInputNameAttr = this.escapeAttr(inputNameRaw);
+            const safeNodeClassAttr = this.escapeAttr(nodeClassRaw);
+            const safeValueAttr = this.escapeAttr(String(currentValueRaw ?? ''));
+            const safeValueText = this.escapeHtml(String(currentValueRaw ?? ''));
+
             const isLoadImage = p.nodeClass === 'LoadImage' || p.nodeClass === 'LoadImageFromPath';
             const isLongText = isLongTextParam(p);
             const isSeed = p.inputName.toLowerCase() === 'seed' ||
@@ -288,30 +371,35 @@ export const ToolkitUI = {
                 p.displayName.includes('Seed');
 
             if (isLoadImage) {
+                const imageValue = String(currentValueRaw ?? '');
+                const previewSources = this.buildInputPreviewSources(nodeClassRaw, imageValue);
+                const safePreviewUrl = this.escapeAttr(previewSources.primary);
+                const safeFallbackPreviewUrl = this.escapeAttr(previewSources.fallback);
                 return `
                     <div class="tk-form-group">
-                        <label class="tk-label">${p.displayName}</label>
+                        <label class="tk-label">${safeDisplayName}</label>
                         <div class="tk-image-upload-area" 
                              style="background:var(--tk-zinc-900); border:1px dashed var(--tk-border); border-radius:8px; padding:12px; text-align:center; transition: all 0.2s;"
-                             ondragover="ToolkitApp.handleDragOver(event)"
-                             ondragleave="ToolkitApp.handleDragLeave(event)"
-                             ondrop="ToolkitApp.handleDrop(event, '${p.nodeId}', '${p.inputName}')">
-                             <input type="file" accept="image/*" style="display:none" onchange="ToolkitApp.uploadInputImage(this, '${p.nodeId}', '${p.inputName}')">
-                             <div class="tk-preview-container" id="preview-${p.nodeId}-${p.inputName}" style="min-height: 40px; display:flex; align-items:center; justify-content:center; flex-direction: column;">
-                                ${p.defaultValue ? `<img src="/view?filename=${encodeURIComponent(p.defaultValue)}&type=input" style="max-width:100%; max-height:200px; border-radius:8px; margin-bottom:8px; box-shadow:0 4px 6px rgba(0,0,0,0.2);">` : '<span style="color:var(--tk-zinc-600); font-size: 2rem; margin-bottom: 8px;">🖼️</span>'}
+                             data-node-id="${safeNodeIdAttr}"
+                             data-input-name="${safeInputNameAttr}">
+                             <input type="file" accept="image/*" class="tk-upload-file-input" data-node-id="${safeNodeIdAttr}" data-input-name="${safeInputNameAttr}" style="display:none">
+                             <div class="tk-preview-container" id="preview-${safeNodeIdAttr}-${safeInputNameAttr}" style="min-height: 40px; display:flex; align-items:center; justify-content:center; flex-direction: column;">
+                                ${imageValue ? `<img src="${safePreviewUrl}" class="tk-upload-preview-image" data-fallback-src="${safeFallbackPreviewUrl}" style="max-width:100%; max-height:200px; border-radius:8px; margin-bottom:8px; box-shadow:0 4px 6px rgba(0,0,0,0.2);">` : '<span style="color:var(--tk-zinc-600); font-size: 2rem; margin-bottom: 8px;">🖼️</span>'}
                              </div>
-                             
-                             <button class="tk-tab-btn" onclick="this.parentElement.querySelector('input[type=file]').click()" style="width:100%; justify-content:center;">
+                              
+                             <button class="tk-tab-btn tk-upload-open-btn" type="button" style="width:100%; justify-content:center;">
                                 📤 上傳圖片 (Upload)
                              </button>
-                             <input type="text" class="tk-input tk-form-input" 
-                                data-node="${p.nodeId}" 
-                                data-input="${p.inputName}" 
-                                data-node-class="${p.nodeClass || ''}"
+                             <input type="text" class="tk-input tk-form-input tk-state-input" 
+                                data-node="${safeNodeIdAttr}" 
+                                data-input="${safeInputNameAttr}" 
+                                data-node-class="${safeNodeClassAttr}"
+                                data-preset-id="${safePresetIdAttr}"
+                                data-state-key="${this.escapeAttr(stateKeyRaw)}"
+                                data-state-event="change"
                                 data-type="string"
-                                value="${inputsState[p.nodeId + '_' + p.inputName] !== undefined ? inputsState[p.nodeId + '_' + p.inputName] : (p.defaultValue || '')}"
-                                style="display:none;"
-                                onchange="ToolkitApp.savePresetState('${preset.id}', { inputs: { ['${p.nodeId}_${p.inputName}']: this.value } })">
+                                value="${safeValueAttr}"
+                                style="display:none;">
                         </div>
                     </div>
                 `;
@@ -320,14 +408,16 @@ export const ToolkitUI = {
             if (isLongText) {
                 return `
                     <div class="tk-form-group" style="height: 100%;">
-                        <label class="tk-label">${p.displayName}</label>
-                        <textarea class="tk-input tk-form-input" 
-                            data-node="${p.nodeId}" 
-                            data-input="${p.inputName}" 
+                        <label class="tk-label">${safeDisplayName}</label>
+                        <textarea class="tk-input tk-form-input tk-state-input" 
+                            data-node="${safeNodeIdAttr}" 
+                            data-input="${safeInputNameAttr}" 
+                            data-preset-id="${safePresetIdAttr}"
+                            data-state-key="${this.escapeAttr(stateKeyRaw)}"
+                            data-state-event="input"
                             data-type="string"
                             style="flex: 1; resize: none; min-height: 200px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: break-word; font-family: monospace;"
-                            oninput="ToolkitApp.savePresetState('${preset.id}', { inputs: { ['${p.nodeId}_${p.inputName}']: this.value } })"
-                        >${inputsState[p.nodeId + '_' + p.inputName] !== undefined ? inputsState[p.nodeId + '_' + p.inputName] : p.defaultValue}</textarea>
+                        >${safeValueText}</textarea>
                     </div>
                 `;
             }
@@ -336,35 +426,38 @@ export const ToolkitUI = {
                 return `
                     <div class="tk-form-group">
                         <div style="display:flex; justify-content:space-between; align-items:center; padding-right: 4px;">
-                             <label class="tk-label">${p.displayName}</label>
-                             <label class="tk-seed-toggle-label" style="display:flex; align-items:center; gap:4px; transform: scale(0.9); cursor:pointer; opacity: 0.8; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.8'">
+                             <label class="tk-label">${safeDisplayName}</label>
+                             <label class="tk-seed-toggle-label" style="display:flex; align-items:center; gap:4px; transform: scale(0.9); cursor:pointer; opacity: 0.8; transition: opacity 0.2s;">
                                 <input type="checkbox" class="tk-random-seed-toggle" 
-                                    data-node="${p.nodeId}" 
-                                    data-input="${p.inputName}"
-                                    style="accent-color: var(--tk-emerald-500); width:14px; height:14px;"
-                                    onchange="const input = this.closest('.tk-form-group').querySelector('.tk-form-input'); input.disabled = this.checked; input.style.opacity = this.checked ? '0.5' : '1';">
+                                    data-node="${safeNodeIdAttr}" 
+                                    data-input="${safeInputNameAttr}"
+                                    style="accent-color: var(--tk-emerald-500); width:14px; height:14px;">
                                 <span style="font-size:0.75rem; color:var(--tk-zinc-400); font-weight: 500;">🎲 隨機</span>
                             </label>
                         </div>
-                        <input type="number" class="tk-input tk-form-input" 
-                            data-node="${p.nodeId}" 
-                            data-input="${p.inputName}" 
+                        <input type="number" class="tk-input tk-form-input tk-state-input" 
+                            data-node="${safeNodeIdAttr}" 
+                            data-input="${safeInputNameAttr}" 
+                            data-preset-id="${safePresetIdAttr}"
+                            data-state-key="${this.escapeAttr(stateKeyRaw)}"
+                            data-state-event="change"
                             data-type="number"
-                            value="${inputsState[p.nodeId + '_' + p.inputName] !== undefined ? inputsState[p.nodeId + '_' + p.inputName] : p.defaultValue}"
-                            onchange="ToolkitApp.savePresetState('${preset.id}', { inputs: { ['${p.nodeId}_${p.inputName}']: this.value } })">
+                            value="${safeValueAttr}">
                     </div>
                 `;
             }
 
             return `
                 <div class="tk-form-group">
-                    <label class="tk-label">${p.displayName}</label>
-                    <input type="text" class="tk-input tk-form-input" 
-                        data-node="${p.nodeId}" 
-                        data-input="${p.inputName}" 
+                    <label class="tk-label">${safeDisplayName}</label>
+                    <input type="text" class="tk-input tk-form-input tk-state-input" 
+                        data-node="${safeNodeIdAttr}" 
+                        data-input="${safeInputNameAttr}" 
+                        data-preset-id="${safePresetIdAttr}"
+                        data-state-key="${this.escapeAttr(stateKeyRaw)}"
+                        data-state-event="change"
                         data-type="${(!isNaN(p.defaultValue) && p.defaultValue !== '') ? 'number' : 'string'}"
-                        value="${inputsState[p.nodeId + '_' + p.inputName] !== undefined ? inputsState[p.nodeId + '_' + p.inputName] : p.defaultValue}"
-                        onchange="ToolkitApp.savePresetState('${preset.id}', { inputs: { ['${p.nodeId}_${p.inputName}']: this.value } })">
+                        value="${safeValueAttr}">
                 </div>
             `;
         };
@@ -372,6 +465,10 @@ export const ToolkitUI = {
         const promptParams = visibleParams.filter(p => isLongTextParam(p));
         // Filter out width/height if handling specifically
         const otherParams = visibleParams.filter(p => !isLongTextParam(p) && (!hasSizeSelection || (p !== widthParam && p !== heightParam)));
+        const presetIdRaw = String(preset.id ?? '');
+        const safePresetIdAttr = this.escapeAttr(presetIdRaw);
+        const sizeModeInputName = `sizeMode_${presetIdRaw}`;
+        const safeSizeModeInputName = this.escapeAttr(sizeModeInputName);
 
         // --- SIZE SELECTION HTML GENERATION ---
         let sizeSelectionHtml = '';
@@ -396,18 +493,23 @@ export const ToolkitUI = {
             if (currentRatio) {
                 initialGroup = currentRatio.name;
             }
+            const safeModelName = this.escapeHtml(String(modelData.name || ''));
+            const safeWidthNodeId = this.escapeAttr(String(widthParam.nodeId ?? ''));
+            const safeWidthInputName = this.escapeAttr(String(widthParam.inputName ?? ''));
+            const safeHeightNodeId = this.escapeAttr(String(heightParam.nodeId ?? ''));
+            const safeHeightInputName = this.escapeAttr(String(heightParam.inputName ?? ''));
 
             sizeSelectionHtml = `
                 <div class="tk-form-group" style="background:rgba(24,24,27,0.5); padding:12px; border-radius:8px; border:1px solid var(--tk-border);">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                         <label class="tk-label" style="margin:0;">📏 尺寸選擇 (${modelData.name})</label>
+                         <label class="tk-label" style="margin:0;">📏 尺寸選擇 (${safeModelName})</label>
                          <div style="display:flex; gap:8px; font-size:0.75rem;">
                              <label style="cursor:pointer; display:flex; align-items:center; gap:4px; ${sizeMode === 'ratio' ? 'color:var(--tk-emerald-400);' : 'color:var(--tk-zinc-500);'}">
-                                <input type="radio" name="sizeMode_${preset.id}" value="ratio" ${sizeMode === 'ratio' ? 'checked' : ''} style="display:none">
+                                <input type="radio" name="${safeSizeModeInputName}" value="ratio" ${sizeMode === 'ratio' ? 'checked' : ''} style="display:none">
                                 <span>選擇比例</span>
                              </label>
                              <label style="cursor:pointer; display:flex; align-items:center; gap:4px; ${sizeMode === 'custom' ? 'color:var(--tk-emerald-400);' : 'color:var(--tk-zinc-500);'}">
-                                <input type="radio" name="sizeMode_${preset.id}" value="custom" ${sizeMode === 'custom' ? 'checked' : ''} style="display:none">
+                                <input type="radio" name="${safeSizeModeInputName}" value="custom" ${sizeMode === 'custom' ? 'checked' : ''} style="display:none">
                                 <span>自訂</span>
                              </label>
                          </div>
@@ -421,7 +523,7 @@ export const ToolkitUI = {
                             <label style="font-size:0.75rem; color:var(--tk-zinc-500); display:block; margin-bottom:4px;">比例 (Ratio)</label>
                             <select class="tk-input" id="tk-size-ratio-group">
                                 ${uniqueRatioNames.map(name => `
-                                    <option value="${name}" ${name === initialGroup ? 'selected' : ''}>${name}</option>
+                                    <option value="${this.escapeAttr(name)}" ${name === initialGroup ? 'selected' : ''}>${this.escapeHtml(name)}</option>
                                 `).join('')}
                             </select>
                         </div>
@@ -439,19 +541,23 @@ export const ToolkitUI = {
                     <div id="tk-size-custom-container" class="${sizeMode === 'custom' ? '' : 'tk-hidden'}" style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
                          <div>
                             <label style="font-size:0.7rem; color:var(--tk-zinc-500);">Width</label>
-                            <input type="number" class="tk-input tk-form-input tk-size-input-w" 
-                                data-node="${widthParam.nodeId}" data-input="${widthParam.inputName}" data-type="number"
-                                value="${currW}"
-                                style="width:100%; box-sizing:border-box;"
-                                onchange="ToolkitApp.savePresetState('${preset.id}', { inputs: { ['${widthParam.nodeId}_${widthParam.inputName}']: this.value } })">
+                            <input type="number" class="tk-input tk-form-input tk-state-input tk-size-input-w" 
+                                data-node="${safeWidthNodeId}" data-input="${safeWidthInputName}" data-type="number"
+                                data-preset-id="${safePresetIdAttr}"
+                                data-state-key="${this.escapeAttr(`${String(widthParam.nodeId ?? '')}_${String(widthParam.inputName ?? '')}`)}"
+                                data-state-event="change"
+                                value="${this.escapeAttr(String(currW ?? ''))}"
+                                style="width:100%; box-sizing:border-box;">
                          </div>
                          <div>
                             <label style="font-size:0.7rem; color:var(--tk-zinc-500);">Height</label>
-                            <input type="number" class="tk-input tk-form-input tk-size-input-h" 
-                                data-node="${heightParam.nodeId}" data-input="${heightParam.inputName}" data-type="number"
-                                value="${currH}"
-                                style="width:100%; box-sizing:border-box;"
-                                onchange="ToolkitApp.savePresetState('${preset.id}', { inputs: { ['${heightParam.nodeId}_${heightParam.inputName}']: this.value } })">
+                            <input type="number" class="tk-input tk-form-input tk-state-input tk-size-input-h" 
+                                data-node="${safeHeightNodeId}" data-input="${safeHeightInputName}" data-type="number"
+                                data-preset-id="${safePresetIdAttr}"
+                                data-state-key="${this.escapeAttr(`${String(heightParam.nodeId ?? '')}_${String(heightParam.inputName ?? '')}`)}"
+                                data-state-event="change"
+                                value="${this.escapeAttr(String(currH ?? ''))}"
+                                style="width:100%; box-sizing:border-box;">
                          </div>
                     </div>
                 </div>
@@ -463,7 +569,7 @@ export const ToolkitUI = {
             <div class="tk-preset-content">
                 <div class="tk-preview-section">
                     ${preset.previewImageUrl ?
-                `<img src="${preset.previewImageUrl}" class="tk-preview-img" loading="lazy" onerror="this.outerHTML='<div class=\\'tk-preview-img\\' style=\\'display:flex;align-items:center;justify-content:center;font-size:5rem;background:#18181b;color:var(--tk-zinc-700);\\'>🍌</div>'">`
+                `<img src="${this.escapeAttr(preset.previewImageUrl)}" class="tk-preview-img" loading="lazy">`
                 : `<div class="tk-preview-img" style="display:flex;align-items:center;justify-content:center;font-size:5rem;background:#18181b;color:var(--tk-zinc-700);">🍌</div>`
             }
                     <div class="tk-preview-badge">
@@ -498,7 +604,7 @@ export const ToolkitUI = {
                         ${preset.allowBatch ? `
                         <div style="width:100%; padding: 12px; background: rgba(39, 39, 42, 0.4); border: 1px solid var(--tk-border); border-radius: 8px; transition: all 0.3s;">
                             <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--tk-zinc-300); font-weight: 500; user-select: none;">
-                                <input type="checkbox" id="tk-batch-toggle" style="accent-color: var(--tk-emerald-500); width:16px; height:16px;" onchange="document.getElementById('tk-batch-config').classList.toggle('tk-hidden', !this.checked); if(this.checked) document.querySelector('.tk-form-container').scrollTop = document.querySelector('.tk-form-container').scrollHeight;">
+                                <input type="checkbox" id="tk-batch-toggle" style="accent-color: var(--tk-emerald-500); width:16px; height:16px;">
                                 <span>🚀 批量生成 (Batch Generation)</span>
                             </label>
                             <div id="tk-batch-config" class="tk-hidden" style="margin-top: 12px; padding-left: 4px; border-top: 1px solid var(--tk-border); padding-top: 12px; animation: tk-fade-in 0.2s;">
@@ -523,6 +629,100 @@ export const ToolkitUI = {
             </div>
         `;
 
+        const previewImage = container.querySelector('.tk-preview-section img.tk-preview-img');
+        if (previewImage) {
+            previewImage.onerror = () => {
+                const fallback = document.createElement('div');
+                fallback.className = 'tk-preview-img';
+                fallback.style.cssText = 'display:flex;align-items:center;justify-content:center;font-size:5rem;background:#18181b;color:var(--tk-zinc-700);';
+                fallback.textContent = '🍌';
+                previewImage.replaceWith(fallback);
+            };
+        }
+
+        const stateInputs = container.querySelectorAll('.tk-state-input');
+        stateInputs.forEach((inputEl) => {
+            const presetId = inputEl.dataset.presetId || presetIdRaw;
+            const stateKey = inputEl.dataset.stateKey;
+            if (!stateKey) return;
+            const eventType = inputEl.dataset.stateEvent || (inputEl.tagName === 'TEXTAREA' ? 'input' : 'change');
+            inputEl.addEventListener(eventType, () => {
+                ToolkitApp.savePresetState(presetId, {
+                    inputs: { [stateKey]: inputEl.value }
+                });
+            });
+        });
+
+        const uploadAreas = container.querySelectorAll('.tk-image-upload-area[data-node-id][data-input-name]');
+        uploadAreas.forEach((area) => {
+            const nodeId = area.dataset.nodeId;
+            const inputName = area.dataset.inputName;
+            if (!nodeId || !inputName) return;
+
+            area.addEventListener('dragover', (e) => ToolkitApp.handleDragOver(e));
+            area.addEventListener('dragleave', (e) => ToolkitApp.handleDragLeave(e));
+            area.addEventListener('drop', (e) => ToolkitApp.handleDrop(e, nodeId, inputName));
+
+            const fileInput = area.querySelector('.tk-upload-file-input');
+            if (fileInput) {
+                fileInput.addEventListener('change', () => ToolkitApp.uploadInputImage(fileInput, nodeId, inputName));
+            }
+            const triggerBtn = area.querySelector('.tk-upload-open-btn');
+            if (triggerBtn && fileInput) {
+                triggerBtn.onclick = () => fileInput.click();
+            }
+        });
+
+        const uploadPreviewImages = container.querySelectorAll('.tk-upload-preview-image');
+        uploadPreviewImages.forEach((img) => {
+            img.addEventListener('error', () => {
+                const fallbackSrc = String(img.dataset.fallbackSrc || '');
+                const triedFallback = img.dataset.fallbackTried === '1';
+                if (fallbackSrc && !triedFallback && img.getAttribute('src') !== fallbackSrc) {
+                    img.dataset.fallbackTried = '1';
+                    img.setAttribute('src', fallbackSrc);
+                    return;
+                }
+
+                const previewContainer = img.parentElement;
+                if (!previewContainer) return;
+                const placeholder = document.createElement('span');
+                placeholder.style.cssText = 'color:var(--tk-zinc-600); font-size: 2rem; margin-bottom: 8px;';
+                placeholder.textContent = '🖼️';
+                img.replaceWith(placeholder);
+            });
+        });
+
+        const seedLabels = container.querySelectorAll('.tk-seed-toggle-label');
+        seedLabels.forEach((label) => {
+            label.addEventListener('mouseenter', () => { label.style.opacity = '1'; });
+            label.addEventListener('mouseleave', () => { label.style.opacity = '0.8'; });
+        });
+
+        const seedToggles = container.querySelectorAll('.tk-random-seed-toggle');
+        seedToggles.forEach((toggle) => {
+            const applyToggleState = () => {
+                const input = toggle.closest('.tk-form-group')?.querySelector('.tk-form-input');
+                if (!input) return;
+                input.disabled = toggle.checked;
+                input.style.opacity = toggle.checked ? '0.5' : '1';
+            };
+            toggle.addEventListener('change', applyToggleState);
+            applyToggleState();
+        });
+
+        const batchToggle = container.querySelector('#tk-batch-toggle');
+        const batchConfig = container.querySelector('#tk-batch-config');
+        if (batchToggle && batchConfig) {
+            batchToggle.addEventListener('change', () => {
+                batchConfig.classList.toggle('tk-hidden', !batchToggle.checked);
+                if (batchToggle.checked) {
+                    const formContainer = container.querySelector('.tk-form-container');
+                    if (formContainer) formContainer.scrollTop = formContainer.scrollHeight;
+                }
+            });
+        }
+
         container.querySelector('#tk-generate-btn').onclick = () => {
             ToolkitApp.executeWorkflow(preset);
         };
@@ -533,7 +733,7 @@ export const ToolkitUI = {
             const resSelect = container.querySelector('#tk-size-resolution-select');
             const inputW = container.querySelector('.tk-size-input-w');
             const inputH = container.querySelector('.tk-size-input-h');
-            const radios = container.querySelectorAll(`input[name="sizeMode_${preset.id}"]`);
+            const radios = Array.from(container.querySelectorAll('input[type="radio"]')).filter((radio) => radio.name === sizeModeInputName);
 
             // Helper to get matching ratio object
             const getRatioObj = (w, h) => modelData.ratios.find(r => r.width == w && r.height == h);
@@ -548,11 +748,13 @@ export const ToolkitUI = {
             // Populate Resolution Select based on Group
             const populateResolutions = (groupName) => {
                 const ratios = ratioGroups[groupName] || [];
-                resSelect.innerHTML = ratios.map(r => `
-                    <option value='${JSON.stringify({ w: r.width, h: r.height })}'>
-                        ${r.width} x ${r.height}
-                    </option>
-                `).join('');
+                resSelect.innerHTML = '';
+                ratios.forEach((r) => {
+                    const option = document.createElement('option');
+                    option.value = JSON.stringify({ w: r.width, h: r.height });
+                    option.textContent = `${String(r.width)} x ${String(r.height)}`;
+                    resSelect.appendChild(option);
+                });
             };
 
             const updateHiddenInputs = (w, h) => {
@@ -608,7 +810,7 @@ export const ToolkitUI = {
             radios.forEach(r => {
                 r.onchange = (e) => {
                     const newMode = e.target.value;
-                    ToolkitApp.savePresetState(preset.id, { sizeMode: newMode });
+                    ToolkitApp.savePresetState(presetIdRaw, { sizeMode: newMode });
 
                     // UI Toggle
                     const ratioContainer = container.querySelector('#tk-size-ratio-container');
@@ -646,17 +848,22 @@ export const ToolkitUI = {
         if (!previewSection) return;
 
         if (type === 'image') {
+            const safeContent = this.escapeAttr(content);
             previewSection.innerHTML = `
-                <img src="${content}" class="tk-preview-img" style="cursor:pointer;" onclick="ToolkitApp.openImageModal('${content}')">
+                <img src="${safeContent}" class="tk-preview-img tk-preview-result-image" style="cursor:pointer;">
                 <div class="tk-preview-badge" style="background: rgba(16, 185, 129, 0.9);">
                     <span class="tk-badge-text">✨ 生成結果</span>
                 </div>
             `;
+            const img = previewSection.querySelector('.tk-preview-result-image');
+            if (img) {
+                img.onclick = () => ToolkitApp.openImageModal(content);
+            }
         } else if (type === 'text') {
             // Text Preview
             previewSection.innerHTML = `
                  <div style="width:100%; height:100%; background:#18181b; padding:2rem; overflow-y:auto; font-size:0.95rem; color:#e4e4e7; white-space:pre-wrap; font-family:monospace; position:relative; display:flex; align-items:center; justify-content:center; text-align:center;">
-                    <div style="max-width: 90%; text-align: left;">${content}</div>
+                    <div class="tk-preview-text-content" style="max-width: 90%; text-align: left;"></div>
                  </div>
                  <button class="tk-copy-btn" title="複製文字" style="
                     position:absolute; top:12px; right:12px; 
@@ -671,6 +878,11 @@ export const ToolkitUI = {
                     <span class="tk-badge-text">📝 生成文字</span>
                 </div>
             `;
+
+            const textContentNode = previewSection.querySelector('.tk-preview-text-content');
+            if (textContentNode) {
+                textContentNode.textContent = String(content ?? '');
+            }
 
             // Add copy functionality
             const copyBtn = previewSection.querySelector('.tk-copy-btn');
