@@ -402,6 +402,63 @@
     box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.1);
 }
 
+.tk-user-followup-panel {
+    margin-top: 1rem;
+    padding: 12px;
+    border: 1px solid var(--tk-border);
+    border-radius: 10px;
+    background: rgba(24, 24, 27, 0.45);
+}
+
+.tk-user-followup-title {
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--tk-zinc-300);
+    margin-bottom: 8px;
+}
+
+.tk-user-followup-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 8px;
+}
+
+.tk-user-followup-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(9, 9, 11, 0.45);
+    cursor: pointer;
+    user-select: none;
+}
+
+.tk-user-followup-item:hover {
+    border-color: rgba(16, 185, 129, 0.5);
+}
+
+.tk-user-followup-toggle {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--tk-emerald-500);
+}
+
+.tk-user-followup-name {
+    font-size: 0.82rem;
+    color: var(--tk-zinc-200);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tk-user-followup-hint {
+    margin: 8px 0 0;
+    font-size: 0.72rem;
+    color: var(--tk-zinc-500);
+}
+
 /* Actions */
 .tk-action-bar {
     margin-top: 2rem;
@@ -656,6 +713,81 @@
     display: inline-block;
     margin-bottom: 4px;
     font-size: 0.65rem;
+}
+
+.tk-next-workflow-list {
+    min-height: 150px;
+    max-height: 220px;
+    overflow-y: auto;
+    border: 1px solid var(--tk-border);
+    border-radius: var(--tk-radius-md);
+    background: var(--tk-bg);
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.tk-next-workflow-row {
+    display: grid;
+    grid-template-columns: 18px 24px 1fr;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    color: var(--tk-zinc-300);
+    cursor: pointer;
+    user-select: none;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.tk-next-workflow-row:hover {
+    background: rgba(255, 255, 255, 0.03);
+    border-color: var(--tk-border);
+}
+
+.tk-next-workflow-row.is-selected {
+    border-color: rgba(16, 185, 129, 0.5);
+    background: rgba(16, 185, 129, 0.08);
+}
+
+.tk-next-workflow-check {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--tk-emerald-500);
+}
+
+.tk-next-workflow-order {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 999px;
+    background: var(--tk-zinc-800);
+    color: var(--tk-zinc-300);
+    font-size: 0.7rem;
+    font-weight: 700;
+}
+
+.tk-next-workflow-row.is-selected .tk-next-workflow-order {
+    background: var(--tk-emerald-500);
+    color: #04120d;
+}
+
+.tk-next-workflow-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.85rem;
+}
+
+.tk-next-workflow-empty {
+    color: var(--tk-zinc-500);
+    font-size: 0.8rem;
+    padding: 10px;
 }
 
 .tk-modal-window *::-webkit-scrollbar-thumb:hover {

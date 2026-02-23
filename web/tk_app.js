@@ -293,6 +293,90 @@ export const ToolkitApp = {
         return `/view?filename=${encodeURIComponent(String(imageMeta.filename))}&subfolder=${encodeURIComponent(String(imageMeta.subfolder || ''))}&type=${encodeURIComponent(String(imageMeta.type || 'output'))}`;
     },
 
+    extractFirstOutputText(historyEntry) {
+        if (!historyEntry || !historyEntry.outputs || typeof historyEntry.outputs !== 'object') return '';
+
+        const outputNodeIds = Object.keys(historyEntry.outputs);
+        for (const nodeId of outputNodeIds) {
+            const out = historyEntry.outputs[nodeId];
+            if (!out || typeof out !== 'object') continue;
+            let txt = out.text ?? out.string ?? out.value;
+            if (txt === undefined || txt === null) continue;
+            if (Array.isArray(txt)) txt = txt.join('\n');
+            return String(txt);
+        }
+        return '';
+    },
+
+    async cacheOutputImageForHistory(imageMeta) {
+        if (!imageMeta || !imageMeta.filename) return '';
+
+        const imageUrl = this.buildComfyViewImageUrl(imageMeta);
+        const imageResponse = await fetch(imageUrl);
+        if (!imageResponse.ok) {
+            throw new Error(`Failed to fetch output image: ${imageResponse.status}`);
+        }
+
+        const blob = await imageResponse.blob();
+        const dotIndex = String(imageMeta.filename).lastIndexOf('.');
+        const ext = dotIndex >= 0 ? String(imageMeta.filename).substring(dotIndex) : '.png';
+        const tmpName = `history_${Date.now()}_${Math.floor(Math.random() * 100000)}${ext}`;
+        const file = new File([blob], tmpName, { type: blob.type || 'image/png' });
+
+        const formData = new FormData();
+        formData.append('image', file);
+        const customRes = await api.fetchApi('/tk/upload_input_image', {
+            method: 'POST',
+            body: formData
+        });
+        const customData = await customRes.json();
+        if (!customRes.ok || customData.status !== 'success') {
+            throw new Error(customData.message || 'Failed to persist history image.');
+        }
+        return String(customData.preview_url || '');
+    },
+
+    async persistHistoryResult(promptId, presetInfo, historyEntry) {
+        const outputImage = extractFirstOutputImage(historyEntry);
+        const textContent = outputImage ? '' : this.extractFirstOutputText(historyEntry);
+
+        let comfyImageUrl = '';
+        let persistedImageUrl = '';
+        if (outputImage) {
+            comfyImageUrl = this.buildComfyViewImageUrl(outputImage);
+            try {
+                persistedImageUrl = await this.cacheOutputImageForHistory(outputImage);
+            } catch (cacheErr) {
+                console.warn('Failed to persist output image for history snapshot', cacheErr);
+            }
+        }
+
+        const finalImageUrl = persistedImageUrl || comfyImageUrl;
+        try {
+            await api.fetchApi('/tk/save_history', {
+                method: 'POST',
+                body: JSON.stringify({
+                    prompt_id: promptId,
+                    preset_id: presetInfo.id,
+                    preset_name: presetInfo.name,
+                    status: 'completed',
+                    image_meta: outputImage || null,
+                    image_url: finalImageUrl || '',
+                    persisted_image_url: persistedImageUrl || '',
+                    text_content: textContent || ''
+                })
+            });
+        } catch (err) {
+            console.error('Failed to persist history result snapshot', err);
+        }
+
+        return {
+            outputImage,
+            textContent,
+            imageUrl: finalImageUrl || ''
+        };
+    },
+
     setFormInputValue(inputEl, nextValue) {
         if (!inputEl) return;
         inputEl.value = nextValue;
@@ -567,8 +651,9 @@ export const ToolkitApp = {
 
         const promptId = await this.submitPrompt(workflow, { id: preset.id, name: preset.name });
         const historyEntry = await this.waitForPromptResult(promptId);
+        const resultSnapshot = await this.persistHistoryResult(promptId, { id: preset.id, name: preset.name }, historyEntry);
         const nextIds = Array.isArray(preset.nextWorkflows) ? preset.nextWorkflows.map((id) => String(id)) : [];
-        const outputImage = extractFirstOutputImage(historyEntry);
+        const outputImage = resultSnapshot.outputImage || extractFirstOutputImage(historyEntry);
         if (nextIds.length > 0 && !outputImage) {
             throw new Error(`工作流「${preset.name}」沒有輸出圖片，無法執行後續工作流。`);
         }
@@ -599,6 +684,36 @@ export const ToolkitApp = {
     },
 
     // --- USER MODE ---
+
+    getUserSelectedFollowupIds(preset) {
+        const adminOrderedIds = Array.isArray(preset?.nextWorkflows)
+            ? preset.nextWorkflows.map((id) => String(id))
+            : [];
+        if (adminOrderedIds.length === 0) return [];
+
+        const toggleNodes = Array.from(document.querySelectorAll('.tk-user-followup-toggle[data-followup-id]'));
+        let selectedSet = null;
+        if (toggleNodes.length > 0) {
+            selectedSet = new Set(
+                toggleNodes
+                    .filter((node) => !!node.checked)
+                    .map((node) => String(node.dataset.followupId || '').trim())
+                    .filter((id) => id)
+            );
+        } else {
+            const savedState = this.getPresetState(preset?.id);
+            const savedFollowups = (savedState && typeof savedState.followups === 'object' && savedState.followups)
+                ? savedState.followups
+                : {};
+            selectedSet = new Set(
+                Object.entries(savedFollowups)
+                    .filter(([, enabled]) => !!enabled)
+                    .map(([id]) => String(id))
+            );
+        }
+
+        return adminOrderedIds.filter((id) => selectedSet.has(String(id)));
+    },
 
     async loadPresets(category, sidebarList, mainPanel) {
         try {
@@ -649,7 +764,7 @@ export const ToolkitApp = {
 
             const rootPreset = {
                 ...preset,
-                nextWorkflows: Array.isArray(preset.nextWorkflows) ? preset.nextWorkflows.map((id) => String(id)) : []
+                nextWorkflows: this.getUserSelectedFollowupIds(preset)
             };
             if (rootPreset.id !== undefined && rootPreset.id !== null) {
                 presetsById.set(String(rootPreset.id), rootPreset);
@@ -742,18 +857,22 @@ export const ToolkitApp = {
             const res = await api.fetchApi('/tk/history');
             const history = await res.json();
 
-            // Process history to get images or text
-            const items = await Promise.all(history.map(async (item) => {
-                // If we don't have an image url recorded, try to find it from Comfy API
-                // Note: Ideally we store the image path when 'executed' event fires, but for now we fetch it
-                if (!item.image_url && !item.text_content) {
+            // Process history to resolve image/text with persisted snapshot first.
+            const items = await Promise.all(history.map(async (rawItem) => {
+                const item = (rawItem && typeof rawItem === 'object') ? { ...rawItem } : {};
+                item.image_url = String(item.persisted_image_url || item.image_url || '');
+
+                if (!item.image_url && item.image_meta && item.image_meta.filename) {
+                    item.image_url = this.buildComfyViewImageUrl(item.image_meta);
+                }
+
+                if (!item.image_url && !item.text_content && item.prompt_id) {
                     try {
                         const hRes = await api.fetchApi('/history/' + item.prompt_id);
                         if (hRes.ok) {
                             const hData = await hRes.json();
                             const data = hData[item.prompt_id];
                             if (data && data.outputs) {
-                                // 1. Try to find Image
                                 for (const nodeId in data.outputs) {
                                     const out = data.outputs[nodeId];
                                     if (out.images && out.images.length > 0) {
@@ -762,7 +881,6 @@ export const ToolkitApp = {
                                         break;
                                     }
                                 }
-                                // 2. If no image, try to find Text
                                 if (!item.image_url) {
                                     for (const nodeId in data.outputs) {
                                         const out = data.outputs[nodeId];
@@ -776,7 +894,9 @@ export const ToolkitApp = {
                                 }
                             }
                         }
-                    } catch (e) { }
+                    } catch (e) {
+                        // Ignore single-item failures and keep rendering the rest.
+                    }
                 }
                 return item;
             }));
@@ -806,7 +926,7 @@ export const ToolkitApp = {
 
                 if (item.image_url) {
                     const safeImageUrl = this.escapeAttr(item.image_url);
-                    contentHtml = `<img src="${safeImageUrl}" class="tk-gallery-img tk-gallery-preview-image" style="cursor:pointer;">`;
+                    contentHtml = `<img src="${safeImageUrl}" class="tk-gallery-img tk-gallery-preview-image" loading="lazy" style="cursor:pointer;">`;
                 } else if (item.text_content) {
                     const safeText = encodeURIComponent(item.text_content);
                     const safeTextAttr = this.escapeAttr(safeText);
@@ -955,7 +1075,7 @@ export const ToolkitApp = {
     // --- STATE MANAGEMENT ---
     savePresetState(presetId, partialState) {
         if (!this.stateCache[presetId]) {
-            this.stateCache[presetId] = { inputs: {}, preview: null };
+            this.stateCache[presetId] = { inputs: {}, preview: null, followups: {} };
         }
         if (partialState.inputs) {
             this.stateCache[presetId].inputs = { ...this.stateCache[presetId].inputs, ...partialState.inputs };
@@ -965,6 +1085,12 @@ export const ToolkitApp = {
         }
         if (partialState.sizeMode !== undefined) {
             this.stateCache[presetId].sizeMode = partialState.sizeMode;
+        }
+        if (partialState.followups) {
+            const current = (typeof this.stateCache[presetId].followups === 'object' && this.stateCache[presetId].followups)
+                ? this.stateCache[presetId].followups
+                : {};
+            this.stateCache[presetId].followups = { ...current, ...partialState.followups };
         }
     },
 
@@ -1390,13 +1516,13 @@ export const ToolkitApp = {
                         <div class="tk-form-group" style="margin-bottom: 2rem;">
                             <label class="tk-label">後續工作流 (可複選，僅限圖片後處理)</label>
                             <div style="display:flex; gap:8px;">
-                                <select id="tk-config-next-workflows" class="tk-input" multiple size="6" style="flex:1; min-height: 150px;"></select>
+                                <div id="tk-config-next-workflows" class="tk-next-workflow-list" style="flex:1;"></div>
                                 <div style="display:flex; flex-direction:column; gap:6px;">
                                     <button id="tk-next-workflow-up" type="button" class="tk-tab-btn" style="padding: 0.5rem 0.8rem;">↑</button>
                                     <button id="tk-next-workflow-down" type="button" class="tk-tab-btn" style="padding: 0.5rem 0.8rem;">↓</button>
                                 </div>
                             </div>
-                            <p style="font-size:0.75rem; color:var(--tk-zinc-500); margin-top:4px;">按住 Ctrl/Command 可複選；使用 ↑↓ 設定執行順序。執行時若需接圖，優先使用 LoadImageFromPath。</p>
+                            <p style="font-size:0.75rem; color:var(--tk-zinc-500); margin-top:4px;">勾選即可啟用後續工作流；可用 ↑↓ 調整執行順序。執行時若需接圖，優先使用 LoadImageFromPath。</p>
                             <p id="tk-image-input-hint" style="display:none; font-size:0.75rem; color:var(--tk-amber-400); margin-top:6px;"></p>
                         </div>
 
@@ -1518,9 +1644,40 @@ export const ToolkitApp = {
         this.renderNextWorkflowOptions([]);
     },
 
-    renderNextWorkflowOptions(selectedIds = [], excludePresetId = null) {
-        const select = document.getElementById('tk-config-next-workflows');
-        if (!select) return;
+    getNextWorkflowRows() {
+        const container = document.getElementById('tk-config-next-workflows');
+        if (!container) return [];
+
+        return Array.from(container.querySelectorAll('.tk-next-workflow-row')).map((row) => {
+            const checkbox = row.querySelector('.tk-next-workflow-check');
+            return {
+                id: String(row.dataset.workflowId || ''),
+                name: String(row.dataset.workflowName || ''),
+                selected: !!(checkbox && checkbox.checked)
+            };
+        }).filter((row) => row.id);
+    },
+
+    updateNextWorkflowOrderBadges() {
+        const container = document.getElementById('tk-config-next-workflows');
+        if (!container) return;
+
+        let order = 1;
+        Array.from(container.querySelectorAll('.tk-next-workflow-row')).forEach((row) => {
+            const checkbox = row.querySelector('.tk-next-workflow-check');
+            const badge = row.querySelector('.tk-next-workflow-order');
+            const selected = !!(checkbox && checkbox.checked);
+            row.classList.toggle('is-selected', selected);
+            if (badge) {
+                badge.textContent = selected ? String(order) : '-';
+            }
+            if (selected) order += 1;
+        });
+    },
+
+    renderNextWorkflowOptions(selectedIds = [], excludePresetId = null, orderedIds = null) {
+        const container = document.getElementById('tk-config-next-workflows');
+        if (!container) return;
 
         const selectedSet = new Set((selectedIds || []).map((id) => String(id)));
         const selectedSorted = [...selectedSet];
@@ -1529,42 +1686,82 @@ export const ToolkitApp = {
         const postProcessPresets = allPresets
             .filter((p) => p && p.category === 'post_image')
             .filter((p) => String(p.id) !== String(excludePresetId));
-
-        const selectedOptions = [];
-        const unselectedOptions = [];
         const byId = new Map(postProcessPresets.map((p) => [String(p.id), p]));
 
-        selectedSorted.forEach((id) => {
-            const preset = byId.get(id);
-            if (!preset) return;
-            selectedOptions.push(preset);
-        });
+        const options = [];
+        const seen = new Set();
+
+        if (Array.isArray(orderedIds) && orderedIds.length > 0) {
+            orderedIds.forEach((id) => {
+                const preset = byId.get(String(id));
+                if (!preset) return;
+                const presetId = String(preset.id);
+                if (seen.has(presetId)) return;
+                seen.add(presetId);
+                options.push(preset);
+            });
+        } else {
+            selectedSorted.forEach((id) => {
+                const preset = byId.get(id);
+                if (!preset) return;
+                const presetId = String(preset.id);
+                if (seen.has(presetId)) return;
+                seen.add(presetId);
+                options.push(preset);
+            });
+        }
 
         postProcessPresets.forEach((preset) => {
-            if (!selectedSet.has(String(preset.id))) {
-                unselectedOptions.push(preset);
-            }
+            const presetId = String(preset.id);
+            if (seen.has(presetId)) return;
+            seen.add(presetId);
+            options.push(preset);
         });
 
-        const options = [...selectedOptions, ...unselectedOptions];
-        select.innerHTML = '';
-        options.forEach((p) => {
-            const option = document.createElement('option');
-            option.value = String(p.id);
-            option.textContent = String(p.name || '');
-            option.selected = selectedSet.has(String(p.id));
-            select.appendChild(option);
+        container.innerHTML = '';
+        if (options.length === 0) {
+            container.innerHTML = '<div class="tk-next-workflow-empty">目前沒有可用的圖片後處理工作流。</div>';
+            return;
+        }
+
+        options.forEach((preset) => {
+            const workflowId = String(preset.id);
+            const row = document.createElement('label');
+            row.className = 'tk-next-workflow-row';
+            row.dataset.workflowId = workflowId;
+            row.dataset.workflowName = String(preset.name || '');
+
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.className = 'tk-next-workflow-check';
+            checkbox.checked = selectedSet.has(workflowId);
+            checkbox.addEventListener('change', () => this.updateNextWorkflowOrderBadges());
+
+            const orderBadge = document.createElement('span');
+            orderBadge.className = 'tk-next-workflow-order';
+            orderBadge.textContent = '-';
+
+            const nameText = document.createElement('span');
+            nameText.className = 'tk-next-workflow-name';
+            nameText.textContent = String(preset.name || '');
+
+            row.appendChild(checkbox);
+            row.appendChild(orderBadge);
+            row.appendChild(nameText);
+            container.appendChild(row);
         });
+
+        this.updateNextWorkflowOrderBadges();
     },
 
     moveSelectedNextWorkflow(direction) {
-        const select = document.getElementById('tk-config-next-workflows');
-        if (!select) return;
+        const rows = this.getNextWorkflowRows();
+        if (rows.length === 0) return;
 
-        const options = Array.from(select.options).map((opt) => ({
-            value: opt.value,
-            text: opt.text,
-            selected: opt.selected
+        const options = rows.map((row) => ({
+            value: row.id,
+            text: row.name,
+            selected: row.selected
         }));
 
         if (direction === 'up') {
@@ -1585,24 +1782,15 @@ export const ToolkitApp = {
             }
         }
 
-        select.innerHTML = '';
-        options.forEach((opt) => {
-            const option = document.createElement('option');
-            option.value = String(opt.value);
-            option.textContent = String(opt.text || '');
-            option.selected = !!opt.selected;
-            select.appendChild(option);
-        });
+        const orderedIds = options.map((opt) => String(opt.value));
+        const selectedAfterMove = options.filter((opt) => opt.selected).map((opt) => String(opt.value));
+        this.renderNextWorkflowOptions(selectedAfterMove, this.editingPresetId, orderedIds);
     },
 
     getOrderedSelectedNextWorkflowIds() {
-        const select = document.getElementById('tk-config-next-workflows');
-        if (!select) return [];
-        const ids = [];
-        Array.from(select.options).forEach((opt) => {
-            if (opt.selected) ids.push(String(opt.value));
-        });
-        return ids;
+        return this.getNextWorkflowRows()
+            .filter((row) => row.selected)
+            .map((row) => String(row.id));
     },
 
     updateImageInputHint(workflow) {

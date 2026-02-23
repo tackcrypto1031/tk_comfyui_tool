@@ -469,6 +469,39 @@ export const ToolkitUI = {
         const safePresetIdAttr = this.escapeAttr(presetIdRaw);
         const sizeModeInputName = `sizeMode_${presetIdRaw}`;
         const safeSizeModeInputName = this.escapeAttr(sizeModeInputName);
+        const savedFollowups = (savedState && typeof savedState.followups === 'object' && savedState.followups) ? savedState.followups : {};
+
+        const availableFollowupIds = Array.isArray(preset.nextWorkflows) ? preset.nextWorkflows.map((id) => String(id)) : [];
+        const presetsMap = new Map((Array.isArray(ToolkitApp.presetsCache) ? ToolkitApp.presetsCache : []).map((p) => [String(p.id), p]));
+        const availableFollowups = availableFollowupIds
+            .map((id) => {
+                const matched = presetsMap.get(String(id));
+                if (!matched) return null;
+                return { id: String(id), name: String(matched.name || id) };
+            })
+            .filter((item) => !!item);
+        const followupSectionHtml = availableFollowups.length > 0 ? `
+            <div class="tk-user-followup-panel">
+                <div class="tk-user-followup-title">可開啟的後續工作流</div>
+                <div class="tk-user-followup-list">
+                    ${availableFollowups.map((item) => {
+                        const safeFollowupId = this.escapeAttr(item.id);
+                        const safeFollowupName = this.escapeHtml(item.name);
+                        const checked = !!savedFollowups[item.id];
+                        return `
+                            <label class="tk-user-followup-item">
+                                <input type="checkbox"
+                                       class="tk-user-followup-toggle"
+                                       data-followup-id="${safeFollowupId}"
+                                       ${checked ? 'checked' : ''}>
+                                <span class="tk-user-followup-name">${safeFollowupName}</span>
+                            </label>
+                        `;
+                    }).join('')}
+                </div>
+                <p class="tk-user-followup-hint">僅本次生成生效；執行順序沿用管理員設定。</p>
+            </div>
+        ` : '';
 
         // --- SIZE SELECTION HTML GENERATION ---
         let sizeSelectionHtml = '';
@@ -600,6 +633,8 @@ export const ToolkitUI = {
                         </div>
                     </div>
 
+                    ${followupSectionHtml}
+
                     <div class="tk-action-bar" style="flex-direction: column; gap: 1rem;">
                         ${preset.allowBatch ? `
                         <div style="width:100%; padding: 12px; background: rgba(39, 39, 42, 0.4); border: 1px solid var(--tk-border); border-radius: 8px; transition: all 0.3s;">
@@ -649,6 +684,17 @@ export const ToolkitUI = {
             inputEl.addEventListener(eventType, () => {
                 ToolkitApp.savePresetState(presetId, {
                     inputs: { [stateKey]: inputEl.value }
+                });
+            });
+        });
+
+        const followupToggles = container.querySelectorAll('.tk-user-followup-toggle[data-followup-id]');
+        followupToggles.forEach((toggle) => {
+            toggle.addEventListener('change', () => {
+                const followupId = String(toggle.dataset.followupId || '').trim();
+                if (!followupId) return;
+                ToolkitApp.savePresetState(presetIdRaw, {
+                    followups: { [followupId]: !!toggle.checked }
                 });
             });
         });

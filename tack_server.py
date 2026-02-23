@@ -5,6 +5,7 @@ import re
 
 class TackServer:
     ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
+    HISTORY_LIMIT = 100
 
     def __init__(self, base_dir=None):
         self.base_dir = os.path.abspath(base_dir) if base_dir else os.path.dirname(os.path.realpath(__file__))
@@ -258,17 +259,96 @@ class TackServer:
 
     def get_history(self):
         try:
-            return self._read_json_file(self.history_path, [])
+            history = self._read_json_file(self.history_path, [])
+            return history if isinstance(history, list) else []
         except Exception as e:
             return []
 
+    def _find_existing_history_index(self, history, history_item):
+        if not isinstance(history, list) or not isinstance(history_item, dict):
+            return -1
+
+        prompt_id = str(history_item.get("prompt_id", "")).strip()
+        item_id = str(history_item.get("id", "")).strip()
+
+        for idx, row in enumerate(history):
+            if not isinstance(row, dict):
+                continue
+            row_prompt_id = str(row.get("prompt_id", "")).strip()
+            row_id = str(row.get("id", "")).strip()
+
+            if prompt_id and row_prompt_id == prompt_id:
+                return idx
+            if item_id and row_id and row_id == item_id:
+                return idx
+        return -1
+
+    def _extract_history_upload_filename(self, history_entry):
+        if not isinstance(history_entry, dict):
+            return None
+
+        marker = "/tk/view_upload/"
+        for key in ("persisted_image_url", "image_url"):
+            raw_value = str(history_entry.get(key, "")).strip()
+            if not raw_value:
+                continue
+            marker_index = raw_value.find(marker)
+            if marker_index < 0:
+                continue
+
+            raw_filename = raw_value[marker_index + len(marker):]
+            raw_filename = raw_filename.split("?", 1)[0].split("#", 1)[0]
+            filename = os.path.basename(raw_filename)
+            if self.is_safe_public_filename(filename):
+                return filename
+
+        return None
+
+    def _cleanup_trimmed_history_assets(self, trimmed_entries, active_entries):
+        if not isinstance(trimmed_entries, list) or not trimmed_entries:
+            return
+
+        active_filenames = set()
+        for entry in active_entries if isinstance(active_entries, list) else []:
+            filename = self._extract_history_upload_filename(entry)
+            if filename:
+                active_filenames.add(filename)
+
+        for entry in trimmed_entries:
+            filename = self._extract_history_upload_filename(entry)
+            if not filename or filename in active_filenames:
+                continue
+
+            file_path = self.get_upload_image_path(filename)
+            if file_path and os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except Exception:
+                    pass
+
     def save_history(self, history_item):
         try:
+            if not isinstance(history_item, dict):
+                return {"status": "error", "message": "Invalid history payload"}
+
             history = self.get_history()
-            history.insert(0, history_item) # Add to beginning
-            # Optional: Limit history size
-            if len(history) > 100:
-                history = history[:100]
+            existing_index = self._find_existing_history_index(history, history_item)
+
+            normalized_item = dict(history_item)
+            if existing_index >= 0:
+                existing_item = history.pop(existing_index)
+                normalized_item = {**existing_item, **normalized_item}
+
+            if not str(normalized_item.get("id", "")).strip():
+                normalized_item["id"] = str(uuid.uuid4())
+            if "prompt_id" in normalized_item:
+                normalized_item["prompt_id"] = str(normalized_item.get("prompt_id", "")).strip()
+
+            history.insert(0, normalized_item)  # Keep most recent first
+            if len(history) > self.HISTORY_LIMIT:
+                trimmed_entries = history[self.HISTORY_LIMIT:]
+                history = history[:self.HISTORY_LIMIT]
+                self._cleanup_trimmed_history_assets(trimmed_entries, history)
                 
             self._write_json_file(self.history_path, history)
             return {"status": "success"}

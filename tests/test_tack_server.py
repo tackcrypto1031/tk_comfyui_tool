@@ -35,6 +35,72 @@ class TackServerTests(unittest.TestCase):
             server = TackServer(base_dir=tmpdir)
             self.assertEqual(server.get_history(), [])
 
+    def test_save_history_merges_existing_entry_by_prompt_id(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            server = TackServer(base_dir=tmpdir)
+            first = {
+                "id": "row-1",
+                "prompt_id": "prompt-abc",
+                "preset_name": "Demo",
+                "timestamp": 1000,
+                "status": "queued",
+            }
+            second = {
+                "prompt_id": "prompt-abc",
+                "status": "completed",
+                "image_url": "/tk/view_upload/demo.png",
+            }
+
+            self.assertEqual(server.save_history(first).get("status"), "success")
+            self.assertEqual(server.save_history(second).get("status"), "success")
+
+            history = server.get_history()
+            self.assertEqual(len(history), 1)
+            self.assertEqual(history[0].get("id"), "row-1")
+            self.assertEqual(history[0].get("prompt_id"), "prompt-abc")
+            self.assertEqual(history[0].get("timestamp"), 1000)
+            self.assertEqual(history[0].get("status"), "completed")
+            self.assertEqual(history[0].get("image_url"), "/tk/view_upload/demo.png")
+
+    def test_save_history_keeps_recent_100_entries(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            server = TackServer(base_dir=tmpdir)
+            for idx in range(120):
+                res = server.save_history({
+                    "id": f"row-{idx}",
+                    "prompt_id": f"prompt-{idx}",
+                    "timestamp": idx,
+                })
+                self.assertEqual(res.get("status"), "success")
+
+            history = server.get_history()
+            self.assertEqual(len(history), 100)
+            self.assertEqual(history[0].get("prompt_id"), "prompt-119")
+            self.assertEqual(history[-1].get("prompt_id"), "prompt-20")
+
+    def test_trimmed_history_removes_persisted_upload_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            upload_dir = os.path.join(tmpdir, "image_upload")
+            os.makedirs(upload_dir, exist_ok=True)
+            stale_file = os.path.join(upload_dir, "stale_history.png")
+            with open(stale_file, "wb") as f:
+                f.write(b"stale")
+
+            server = TackServer(base_dir=tmpdir)
+            server.save_history({
+                "id": "stale-row",
+                "prompt_id": "prompt-stale",
+                "persisted_image_url": "/tk/view_upload/stale_history.png",
+            })
+
+            for idx in range(100):
+                server.save_history({
+                    "id": f"row-{idx}",
+                    "prompt_id": f"prompt-{idx}",
+                })
+
+            self.assertFalse(os.path.exists(stale_file))
+
     def test_save_workflow_blocks_path_traversal(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             server = TackServer(base_dir=tmpdir)
