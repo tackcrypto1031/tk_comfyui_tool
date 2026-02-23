@@ -60,6 +60,15 @@ async def save_history(request):
     data = await request.json()
     return web.json_response(server_util.save_history(data))
 
+@PromptServer.instance.routes.get("/tk/settings")
+async def get_settings(request):
+    return web.json_response(server_util.get_settings())
+
+@PromptServer.instance.routes.post("/tk/save_settings")
+async def save_settings(request):
+    data = await request.json()
+    return web.json_response(server_util.save_settings(data))
+
 @PromptServer.instance.routes.post("/tk/upload_input_image")
 async def upload_input_image(request):
     """Upload image to local image_upload folder for LoadImage nodes."""
@@ -77,8 +86,10 @@ async def view_upload(request):
     """Serve uploaded images from image_upload folder."""
     import mimetypes
     filename = request.match_info['filename']
-    upload_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "image_upload")
-    file_path = os.path.join(upload_dir, filename)
+    file_path = server_util.get_upload_image_path(filename)
+
+    if file_path is None:
+        return web.Response(status=400, text="Invalid filename")
     
     if not os.path.exists(file_path):
         return web.Response(status=404, text="File not found")

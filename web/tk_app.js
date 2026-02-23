@@ -1,11 +1,14 @@
 import { api } from "../../scripts/api.js";
 import { ToolkitUI } from "./tk_ui.js";
+import { extractFirstOutputImage, findCyclePath, findImageInputTargets, pickPrimaryImageInputTarget } from "./tk_workflow_utils.js";
 
 export const ToolkitApp = {
     // --- CACHE ---
     historyCache: null,
     isListening: false,
     currentPromptId: null,
+    executionErrorActive: false,
+    settingsCache: null,
     stateCache: {}, // Stores inputs and preview per preset ID
 
     init() {
@@ -33,9 +36,13 @@ export const ToolkitApp = {
 
     onStatus(e) {
         if (!e.detail || !e.detail.exec_info) return;
+        if (this.executionErrorActive) return;
         const count = e.detail.exec_info.queue_remaining;
         const queueElem = document.getElementById('tk-queue-count');
-        if (queueElem) queueElem.innerText = `Waiting: ${count}`;
+        if (queueElem) {
+            queueElem.style.color = '';
+            queueElem.innerText = `Waiting: ${count}`;
+        }
 
         if (count === 0) {
             // Optional: Hide progress bar after a delay?
@@ -66,7 +73,7 @@ export const ToolkitApp = {
                             // Check for Images
                             if (out.images && out.images.length > 0) {
                                 const img = out.images[0];
-                                foundImage = `/view?filename=${img.filename}&subfolder=${img.subfolder}&type=${img.type}`;
+                                foundImage = this.buildComfyViewImageUrl(img);
                                 break; // Prioritize image
                             }
                             // Check for Text (common keys: text, string, value)
@@ -116,7 +123,597 @@ export const ToolkitApp = {
         });
     },
 
+    cloneWorkflow(workflow) {
+        return JSON.parse(JSON.stringify(workflow || {}));
+    },
+
+    normalizeInputValue(rawValue, dataType, nodeClass) {
+        if (dataType === 'number') {
+            const strVal = String(rawValue ?? '').trim();
+            if (strVal === '') return '';
+            if (strVal.includes('.')) {
+                const f = parseFloat(strVal);
+                return Number.isNaN(f) ? strVal : f;
+            }
+            const i = parseInt(strVal, 10);
+            return Number.isNaN(i) ? strVal : i;
+        }
+
+        if (dataType === 'string' || nodeClass === 'LoadImage' || nodeClass === 'LoadImageFromPath') {
+            return String(rawValue ?? '');
+        }
+
+        const strVal = String(rawValue ?? '');
+        if (!Number.isNaN(Number(strVal)) && strVal.trim() !== '') {
+            if (strVal.includes('.')) return parseFloat(strVal);
+            return parseInt(strVal, 10);
+        }
+        return rawValue;
+    },
+
+    findElementByDataset(selector, datasetFilters, root = document) {
+        const candidates = root.querySelectorAll(selector);
+        for (const el of candidates) {
+            let matched = true;
+            for (const [key, value] of Object.entries(datasetFilters || {})) {
+                if (String(el.dataset[key] ?? '') !== String(value ?? '')) {
+                    matched = false;
+                    break;
+                }
+            }
+            if (matched) return el;
+        }
+        return null;
+    },
+
+    applyUserInputsToWorkflow(baseWorkflow) {
+        const workflow = this.cloneWorkflow(baseWorkflow);
+        const inputs = document.querySelectorAll('.tk-form-input');
+
+        inputs.forEach((input) => {
+            const nodeId = input.dataset.node;
+            const inputName = input.dataset.input;
+            const nodeClass = input.dataset.nodeClass || '';
+            const randomToggle = this.findElementByDataset('.tk-random-seed-toggle', {
+                node: nodeId,
+                input: inputName,
+            });
+
+            let value = input.value;
+            if (randomToggle && randomToggle.checked) {
+                value = Math.floor(Math.random() * 100000000000000);
+            } else {
+                value = this.normalizeInputValue(value, input.dataset.type, nodeClass);
+            }
+
+            if (!workflow[nodeId] || !workflow[nodeId].inputs) return;
+            workflow[nodeId].inputs[inputName] = value;
+
+            if (nodeClass === 'LoadImageFromPath') {
+                workflow[nodeId].class_type = 'LoadImageFromPath';
+                if (workflow[nodeId].inputs['upload']) delete workflow[nodeId].inputs['upload'];
+                if (workflow[nodeId].inputs['subfolder']) delete workflow[nodeId].inputs['subfolder'];
+            }
+        });
+
+        return workflow;
+    },
+
+    sanitizeLoadImageNodes(workflow, { requireImageInput = false } = {}) {
+        for (const nodeId in workflow) {
+            const node = workflow[nodeId];
+            if (!node || !node.inputs) continue;
+
+            if (node.class_type === 'LoadImage') {
+                if (node.inputs['image'] !== undefined) {
+                    node.inputs['image'] = String(node.inputs['image']).trim();
+                }
+                if (!node.inputs['subfolder']) {
+                    node.inputs['subfolder'] = "";
+                }
+                if (requireImageInput && (!node.inputs['image'] || node.inputs['image'] === '')) {
+                    throw new Error(`Node ${nodeId} (${node._meta?.title || 'LoadImage'}) requires an image.`);
+                }
+            }
+
+            if (node.class_type === 'LoadImageFromPath') {
+                const targets = ['image', 'image_path', 'path', 'file_path', 'filename'];
+                let hasPathInput = false;
+                for (const key of targets) {
+                    if (node.inputs[key] !== undefined) {
+                        node.inputs[key] = String(node.inputs[key]).trim();
+                        if (node.inputs[key] !== '') hasPathInput = true;
+                    }
+                }
+                if (requireImageInput && !hasPathInput) {
+                    throw new Error(`Node ${nodeId} (${node._meta?.title || 'LoadImageFromPath'}) requires an image path.`);
+                }
+            }
+        }
+    },
+
+    randomizeSeedInputs(workflow) {
+        for (const nodeId in workflow) {
+            const node = workflow[nodeId];
+            if (!node || !node.inputs) continue;
+            if (node.inputs['seed'] !== undefined) node.inputs['seed'] = Math.floor(Math.random() * 100000000000000);
+            if (node.inputs['noise_seed'] !== undefined) node.inputs['noise_seed'] = Math.floor(Math.random() * 100000000000000);
+        }
+    },
+
+    setProgressInfo(title, message, isError = false) {
+        const bar = document.getElementById('tk-progress-area');
+        const titleElem = document.getElementById('tk-progress-title');
+        const queueElem = document.getElementById('tk-queue-count');
+        if (bar) bar.classList.remove('tk-hidden');
+        if (titleElem && title !== undefined) titleElem.innerText = title;
+        if (queueElem && message !== undefined) {
+            queueElem.style.color = isError ? 'var(--tk-rose-400, #f87171)' : '';
+            queueElem.innerText = message;
+        }
+    },
+
+    resetProgressInfo() {
+        this.executionErrorActive = false;
+        const titleElem = document.getElementById('tk-progress-title');
+        const percentElem = document.getElementById('tk-progress-percent');
+        const fillElem = document.getElementById('tk-progress-fill');
+        const queueElem = document.getElementById('tk-queue-count');
+        if (titleElem) titleElem.innerText = 'Generating...';
+        if (percentElem) percentElem.innerText = '0%';
+        if (fillElem) fillElem.style.width = '0%';
+        if (queueElem) {
+            queueElem.style.color = '';
+            queueElem.innerText = 'Waiting: 0';
+        }
+    },
+
+    setFormStatus(statusContainer, statusMsg, text, isError = false) {
+        if (!statusContainer || !statusMsg) return;
+        statusContainer.classList.remove('tk-hidden');
+        statusMsg.className = isError ? 'tk-status-msg tk-status-error' : 'tk-status-msg tk-status-emerald';
+        statusMsg.textContent = text;
+    },
+
+    escapeHtml(value) {
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    },
+
+    escapeAttr(value) {
+        return this.escapeHtml(value).replace(/`/g, '&#96;');
+    },
+
+    buildComfyViewImageUrl(imageMeta) {
+        if (!imageMeta || !imageMeta.filename) return '';
+        return `/view?filename=${encodeURIComponent(String(imageMeta.filename))}&subfolder=${encodeURIComponent(String(imageMeta.subfolder || ''))}&type=${encodeURIComponent(String(imageMeta.type || 'output'))}`;
+    },
+
+    extractFirstOutputText(historyEntry) {
+        if (!historyEntry || !historyEntry.outputs || typeof historyEntry.outputs !== 'object') return '';
+
+        const outputNodeIds = Object.keys(historyEntry.outputs);
+        for (const nodeId of outputNodeIds) {
+            const out = historyEntry.outputs[nodeId];
+            if (!out || typeof out !== 'object') continue;
+            let txt = out.text ?? out.string ?? out.value;
+            if (txt === undefined || txt === null) continue;
+            if (Array.isArray(txt)) txt = txt.join('\n');
+            return String(txt);
+        }
+        return '';
+    },
+
+    async cacheOutputImageForHistory(imageMeta) {
+        if (!imageMeta || !imageMeta.filename) return '';
+
+        const imageUrl = this.buildComfyViewImageUrl(imageMeta);
+        const imageResponse = await fetch(imageUrl);
+        if (!imageResponse.ok) {
+            throw new Error(`Failed to fetch output image: ${imageResponse.status}`);
+        }
+
+        const blob = await imageResponse.blob();
+        const dotIndex = String(imageMeta.filename).lastIndexOf('.');
+        const ext = dotIndex >= 0 ? String(imageMeta.filename).substring(dotIndex) : '.png';
+        const tmpName = `history_${Date.now()}_${Math.floor(Math.random() * 100000)}${ext}`;
+        const file = new File([blob], tmpName, { type: blob.type || 'image/png' });
+
+        const formData = new FormData();
+        formData.append('image', file);
+        const customRes = await api.fetchApi('/tk/upload_input_image', {
+            method: 'POST',
+            body: formData
+        });
+        const customData = await customRes.json();
+        if (!customRes.ok || customData.status !== 'success') {
+            throw new Error(customData.message || 'Failed to persist history image.');
+        }
+        return String(customData.preview_url || '');
+    },
+
+    async persistHistoryResult(promptId, presetInfo, historyEntry) {
+        const outputImage = extractFirstOutputImage(historyEntry);
+        const textContent = outputImage ? '' : this.extractFirstOutputText(historyEntry);
+
+        let comfyImageUrl = '';
+        let persistedImageUrl = '';
+        if (outputImage) {
+            comfyImageUrl = this.buildComfyViewImageUrl(outputImage);
+            try {
+                persistedImageUrl = await this.cacheOutputImageForHistory(outputImage);
+            } catch (cacheErr) {
+                console.warn('Failed to persist output image for history snapshot', cacheErr);
+            }
+        }
+
+        const finalImageUrl = persistedImageUrl || comfyImageUrl;
+        try {
+            await api.fetchApi('/tk/save_history', {
+                method: 'POST',
+                body: JSON.stringify({
+                    prompt_id: promptId,
+                    preset_id: presetInfo.id,
+                    preset_name: presetInfo.name,
+                    status: 'completed',
+                    image_meta: outputImage || null,
+                    image_url: finalImageUrl || '',
+                    persisted_image_url: persistedImageUrl || '',
+                    text_content: textContent || ''
+                })
+            });
+        } catch (err) {
+            console.error('Failed to persist history result snapshot', err);
+        }
+
+        return {
+            outputImage,
+            textContent,
+            imageUrl: finalImageUrl || ''
+        };
+    },
+
+    setFormInputValue(inputEl, nextValue) {
+        if (!inputEl) return;
+        inputEl.value = nextValue;
+        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+        inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+    },
+
+    async ensurePresetsLoaded() {
+        if (!this.presetsCache) {
+            const response = await api.fetchApi('/tk/presets');
+            this.presetsCache = await response.json();
+        }
+    },
+
+    async ensureSettingsLoaded() {
+        if (!this.settingsCache) {
+            const response = await api.fetchApi('/tk/settings');
+            const rawSettings = response.ok ? await response.json() : {};
+            this.settingsCache = {
+                clear_history_on_startup: !!(rawSettings && rawSettings.clear_history_on_startup)
+            };
+        }
+    },
+
+    async saveToolkitSettings(partialSettings) {
+        await this.ensureSettingsLoaded();
+        const payload = {
+            ...this.settingsCache,
+            ...(partialSettings || {})
+        };
+
+        const response = await api.fetchApi('/tk/save_settings', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+        if (!response.ok || data.status !== 'success') {
+            throw new Error(data.message || 'Save settings failed.');
+        }
+
+        this.settingsCache = {
+            clear_history_on_startup: !!(data.settings && data.settings.clear_history_on_startup)
+        };
+    },
+
+    async submitPrompt(workflow, presetInfo) {
+        const payload = {
+            prompt: workflow,
+            client_id: api.clientId
+        };
+
+        const response = await api.fetchApi('/prompt', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            let errText = response.statusText;
+            try {
+                const errJson = await response.json();
+                if (errJson && errJson.error) errText = JSON.stringify(errJson.error);
+                else if (errJson) errText = JSON.stringify(errJson);
+            } catch (e2) {
+                const txt = await response.text();
+                if (txt) errText = txt;
+            }
+            throw new Error(`API Error ${response.status}: ${errText}`);
+        }
+
+        const resData = await response.json();
+        const promptId = resData.prompt_id;
+        if (!promptId) throw new Error('ComfyUI did not return prompt_id.');
+
+        try {
+            await api.fetchApi('/tk/save_history', {
+                method: 'POST',
+                body: JSON.stringify({
+                    id: this.uuidv4(),
+                    prompt_id: promptId,
+                    preset_id: presetInfo.id,
+                    preset_name: presetInfo.name,
+                    timestamp: Date.now(),
+                    workflow,
+                    status: 'queued'
+                })
+            });
+        } catch (err) {
+            console.error("Failed to save history", err);
+        }
+
+        this.currentPromptId = promptId;
+        this.currentPresetId = presetInfo.id;
+
+        return promptId;
+    },
+
+    extractHistoryErrorMessage(historyEntry) {
+        if (!historyEntry || typeof historyEntry !== 'object') return '';
+        const status = historyEntry.status;
+        if (!status) return '';
+
+        if (Array.isArray(status.messages) && status.messages.length > 0) {
+            const last = status.messages[status.messages.length - 1];
+            if (typeof last === 'string') return last;
+            try {
+                return JSON.stringify(last);
+            } catch (err) {
+                return String(last);
+            }
+        }
+
+        if (status.status_str && status.status_str !== 'success') {
+            return String(status.status_str);
+        }
+
+        return '';
+    },
+
+    async waitForPromptResult(promptId, timeoutMs = 600000, pollMs = 800) {
+        const start = Date.now();
+
+        while ((Date.now() - start) < timeoutMs) {
+            const response = await api.fetchApi('/history/' + promptId);
+            if (response.ok) {
+                const historyData = await response.json();
+                const entry = historyData ? historyData[promptId] : null;
+                if (entry) {
+                    if (entry.status && entry.status.status_str === 'error') {
+                        const reason = this.extractHistoryErrorMessage(entry);
+                        throw new Error(reason || `Prompt ${promptId} execution failed.`);
+                    }
+
+                    if (entry.outputs && Object.keys(entry.outputs).length > 0) {
+                        return entry;
+                    }
+
+                    if (entry.status && entry.status.completed && (!entry.outputs || Object.keys(entry.outputs).length === 0)) {
+                        throw new Error(`Prompt ${promptId} completed but no outputs were found.`);
+                    }
+                }
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, pollMs));
+        }
+
+        throw new Error(`等待執行結果超時 (${Math.floor(timeoutMs / 1000)} 秒)`);
+    },
+
+    async materializeImageSources(imageMeta) {
+        if (!imageMeta || !imageMeta.filename) {
+            throw new Error('No output image metadata found for chaining.');
+        }
+
+        const imageUrl = `/view?filename=${encodeURIComponent(imageMeta.filename)}&subfolder=${encodeURIComponent(imageMeta.subfolder || '')}&type=${encodeURIComponent(imageMeta.type || 'output')}`;
+        const imageResponse = await fetch(imageUrl);
+        if (!imageResponse.ok) {
+            throw new Error(`Failed to fetch output image: ${imageResponse.status}`);
+        }
+
+        const blob = await imageResponse.blob();
+        const dotIndex = String(imageMeta.filename).lastIndexOf('.');
+        const ext = dotIndex >= 0 ? String(imageMeta.filename).substring(dotIndex) : '.png';
+        const tmpName = `chain_${Date.now()}_${Math.floor(Math.random() * 100000)}${ext}`;
+        const file = new File([blob], tmpName, { type: blob.type || 'image/png' });
+
+        const customFormData = new FormData();
+        customFormData.append('image', file);
+        const customRes = await api.fetchApi('/tk/upload_input_image', {
+            method: 'POST',
+            body: customFormData
+        });
+        const customData = await customRes.json();
+        if (!customRes.ok || customData.status !== 'success') {
+            throw new Error(customData.message || 'Failed to cache image for chained workflow.');
+        }
+
+        let inputFilename = null;
+        try {
+            const standardFormData = new FormData();
+            const renamedFile = new File([blob], customData.filename || tmpName, { type: blob.type || 'image/png' });
+            standardFormData.append('image', renamedFile);
+            standardFormData.append('overwrite', 'true');
+
+            const standardRes = await api.fetchApi('/upload/image', {
+                method: 'POST',
+                body: standardFormData
+            });
+            if (standardRes.ok) {
+                const standardData = await standardRes.json();
+                inputFilename = standardData.name || null;
+            }
+        } catch (err) {
+            console.warn('Failed to upload chained image to ComfyUI input folder', err);
+        }
+
+        return {
+            absPath: customData.abs_path || null,
+            inputFilename
+        };
+    },
+
+    applyPresetDefaultParameters(workflow, preset) {
+        if (!preset || !Array.isArray(preset.parameters)) return;
+
+        preset.parameters.forEach((param) => {
+            if (!param || !param.nodeId || !param.inputName) return;
+            if (!workflow[param.nodeId] || !workflow[param.nodeId].inputs) return;
+            workflow[param.nodeId].inputs[param.inputName] = param.defaultValue;
+        });
+    },
+
+    buildFollowupWorkflow(preset, imageSources) {
+        const workflow = this.cloneWorkflow(preset.workflow);
+        this.applyPresetDefaultParameters(workflow, preset);
+        this.sanitizeLoadImageNodes(workflow, { requireImageInput: false });
+
+        const target = pickPrimaryImageInputTarget(workflow);
+        if (!target) {
+            throw new Error(`後續工作流「${preset.name}」沒有可接圖節點 (LoadImageFromPath / LoadImage)。`);
+        }
+
+        const node = workflow[target.nodeId];
+        if (!node || !node.inputs) {
+            throw new Error(`後續工作流「${preset.name}」目標節點無效: ${target.nodeId}`);
+        }
+
+        if (target.nodeClass === 'LoadImageFromPath') {
+            if (!imageSources.absPath) {
+                throw new Error(`後續工作流「${preset.name}」需要絕對路徑，但取得失敗。`);
+            }
+            node.class_type = 'LoadImageFromPath';
+            node.inputs[target.inputName] = String(imageSources.absPath);
+            if (node.inputs['upload']) delete node.inputs['upload'];
+            if (node.inputs['subfolder']) delete node.inputs['subfolder'];
+        } else {
+            if (!imageSources.inputFilename) {
+                throw new Error(`後續工作流「${preset.name}」需要 LoadImage 檔名，但取得失敗。`);
+            }
+            node.class_type = 'LoadImage';
+            node.inputs[target.inputName] = String(imageSources.inputFilename);
+            if (!node.inputs['subfolder']) {
+                node.inputs['subfolder'] = "";
+            }
+        }
+
+        this.sanitizeLoadImageNodes(workflow, { requireImageInput: true });
+        return workflow;
+    },
+
+    async executePresetChain(preset, workflow, presetsById, context) {
+        const chainStack = context.chainStack || [];
+        const presetId = String(preset.id || '');
+        if (presetId && chainStack.includes(presetId)) {
+            const cycleNames = [...chainStack, presetId].map((id) => {
+                const p = presetsById.get(String(id));
+                return p ? p.name : id;
+            });
+            throw new Error(`偵測到循環工作流: ${cycleNames.join(' -> ')}`);
+        }
+
+        const nextContext = {
+            ...context,
+            chainStack: presetId ? [...chainStack, presetId] : [...chainStack]
+        };
+
+        this.setProgressInfo(
+            `執行中 (${nextContext.batchIndex + 1}/${nextContext.batchCount})`,
+            `▶ ${preset.name}`
+        );
+        this.setFormStatus(nextContext.statusContainer, nextContext.statusMsg, `⚙️ 正在執行：${preset.name}`);
+
+        const promptId = await this.submitPrompt(workflow, { id: preset.id, name: preset.name });
+        const historyEntry = await this.waitForPromptResult(promptId);
+        const resultSnapshot = await this.persistHistoryResult(promptId, { id: preset.id, name: preset.name }, historyEntry);
+        const nextIds = Array.isArray(preset.nextWorkflows) ? preset.nextWorkflows.map((id) => String(id)) : [];
+        const outputImage = resultSnapshot.outputImage || extractFirstOutputImage(historyEntry);
+        if (nextIds.length > 0 && !outputImage) {
+            throw new Error(`工作流「${preset.name}」沒有輸出圖片，無法執行後續工作流。`);
+        }
+
+        let currentOutputImage = outputImage;
+        for (let idx = 0; idx < nextIds.length; idx++) {
+            const nextId = nextIds[idx];
+            const nextPreset = presetsById.get(nextId);
+            if (!nextPreset) {
+                throw new Error(`找不到後續工作流 (ID: ${nextId})，請回管理員修正設定。`);
+            }
+
+            this.setProgressInfo(
+                `後續流程 (${nextContext.batchIndex + 1}/${nextContext.batchCount})`,
+                `➡ ${nextPreset.name} (${idx + 1}/${nextIds.length})`
+            );
+            this.setFormStatus(nextContext.statusContainer, nextContext.statusMsg, `➡ 後續工作流：${nextPreset.name}`);
+
+            if (!currentOutputImage) {
+                throw new Error(`工作流「${preset.name}」缺少輸出圖片，無法傳遞到「${nextPreset.name}」。`);
+            }
+            const imageSources = await this.materializeImageSources(currentOutputImage);
+            const followupWorkflow = this.buildFollowupWorkflow(nextPreset, imageSources);
+            currentOutputImage = await this.executePresetChain(nextPreset, followupWorkflow, presetsById, nextContext);
+        }
+
+        return currentOutputImage || null;
+    },
+
     // --- USER MODE ---
+
+    getUserSelectedFollowupIds(preset) {
+        const adminOrderedIds = Array.isArray(preset?.nextWorkflows)
+            ? preset.nextWorkflows.map((id) => String(id))
+            : [];
+        if (adminOrderedIds.length === 0) return [];
+
+        const toggleNodes = Array.from(document.querySelectorAll('.tk-user-followup-toggle[data-followup-id]'));
+        let selectedSet = null;
+        if (toggleNodes.length > 0) {
+            selectedSet = new Set(
+                toggleNodes
+                    .filter((node) => !!node.checked)
+                    .map((node) => String(node.dataset.followupId || '').trim())
+                    .filter((id) => id)
+            );
+        } else {
+            const savedState = this.getPresetState(preset?.id);
+            const savedFollowups = (savedState && typeof savedState.followups === 'object' && savedState.followups)
+                ? savedState.followups
+                : {};
+            selectedSet = new Set(
+                Object.entries(savedFollowups)
+                    .filter(([, enabled]) => !!enabled)
+                    .map(([id]) => String(id))
+            );
+        }
+
+        return adminOrderedIds.filter((id) => selectedSet.has(String(id)));
+    },
 
     async loadPresets(category, sidebarList, mainPanel) {
         try {
@@ -127,7 +724,7 @@ export const ToolkitApp = {
 
             // Define Category Mapping
             const catMap = {
-                'image': ['t2i', 'i2i', 'edit'],
+                'image': ['t2i', 'i2i', 'edit', 'post_image'],
                 'video': ['t2v', 'i2v', 'v2v'],
                 'reverse': ['rev_image', 'rev_video']
             };
@@ -152,119 +749,29 @@ export const ToolkitApp = {
         const statusContainer = document.getElementById('tk-status-container');
         const statusMsg = document.getElementById('tk-status-msg');
 
+        if (!btn || !statusContainer || !statusMsg) return;
+
         btn.disabled = true;
         btn.innerHTML = '<div class="tk-badge-pulse" style="display:inline-block; margin-right:8px;"></div> Generating...';
 
-        statusContainer.classList.remove('tk-hidden');
-        statusMsg.className = 'tk-status-msg tk-status-emerald';
-        statusMsg.textContent = "🚀 正在準備工作流...";
+        this.resetProgressInfo();
+        this.setProgressInfo('初始化中', '🚀 正在準備工作流...');
+        this.setFormStatus(statusContainer, statusMsg, '🚀 正在準備工作流...');
 
         try {
-            let workflow = JSON.parse(JSON.stringify(preset.workflow));
-            const inputs = document.querySelectorAll('.tk-form-input');
+            await this.ensurePresetsLoaded();
+            const presetsById = new Map((this.presetsCache || []).map((p) => [String(p.id), p]));
 
-            inputs.forEach(input => {
-                const nodeId = input.dataset.node;
-                const inputName = input.dataset.input;
-                let value = input.value;
-
-                const randomToggle = document.querySelector(`.tk-random-seed-toggle[data-node="${nodeId}"][data-input="${inputName}"]`);
-
-                // 1. Random Seed
-                if (randomToggle && randomToggle.checked) {
-                    value = Math.floor(Math.random() * 100000000000000);
-                }
-                // 2. Explicit Type Handling
-                else if (input.dataset.type === 'number') {
-                    if (value.includes('.')) value = parseFloat(value);
-                    else value = parseInt(value);
-                }
-                else if (input.dataset.type === 'string' || input.dataset.nodeClass === 'LoadImage') {
-                    // Keep as string
-                    value = String(value);
-                }
-                // 3. Fallback Heuristic (Legacy)
-                else {
-                    if (!isNaN(value) && value.trim() !== '') {
-                        if (value.includes('.')) value = parseFloat(value);
-                        else value = parseInt(value);
-                    }
-                }
-
-                if (workflow[nodeId] && workflow[nodeId].inputs) {
-                    workflow[nodeId].inputs[inputName] = value;
-
-                    // CRITICAL FIX for LoadImageFromPath
-                    // If the UI knows this is LoadImageFromPath (via preset), but the underlying workflow 
-                    // still says LoadImage (due to stale preset data), validation will fail.
-                    // We FORCE the class_type to match what the UI logic expects.
-                    if (input.dataset.nodeClass === 'LoadImageFromPath') {
-                        // Ensure we update it so ComfyUI knows to check for absolute path input
-                        console.log(`🔧 Auto-Correcting Node ${nodeId} class_type to LoadImageFromPath`);
-                        workflow[nodeId].class_type = 'LoadImageFromPath';
-                        // Remove potential 'upload' or 'subfolder' keys that LoadImageFromPath doesn't need
-                        if (workflow[nodeId].inputs['upload']) delete workflow[nodeId].inputs['upload'];
-                        if (workflow[nodeId].inputs['subfolder']) delete workflow[nodeId].inputs['subfolder'];
-                    }
-                }
-            });
-
-            // Validation & Sanitization: LoadImage nodes
-            for (const nodeId in workflow) {
-                const node = workflow[nodeId];
-                if (node.class_type === 'LoadImage') {
-                    // 1. Force 'image' to be a string
-                    if (node.inputs && node.inputs['image']) {
-                        node.inputs['image'] = String(node.inputs['image']).trim();
-                    }
-
-                    // 2. Explicitly set subfolder to empty string if missing or null, to match standard API behavior
-                    if (!node.inputs['subfolder']) {
-                        node.inputs['subfolder'] = "";
-                    }
-
-                    const val = node.inputs['image'];
-                    if (!val || val === '') {
-                        alert(`❌ Node ${nodeId} (${node._meta?.title || 'LoadImage'}) requires an image! Please upload one.`);
-                        btn.disabled = false;
-                        btn.innerHTML = '重試 (Retry)';
-                        statusContainer.classList.add('tk-hidden');
-                        return; // Stop execution
-                    }
-
-                    // Log the sanitized node for debugging
-                    console.log(`🧹 Sanitized LoadImage Node ${nodeId}:`, JSON.stringify(node.inputs));
-                }
+            const rootPreset = {
+                ...preset,
+                nextWorkflows: this.getUserSelectedFollowupIds(preset)
+            };
+            if (rootPreset.id !== undefined && rootPreset.id !== null) {
+                presetsById.set(String(rootPreset.id), rootPreset);
             }
 
-            // Detailed debug logging
-            console.log("🚀 Executing Workflow:", workflow);
-
-            // Check for output nodes
-            const outputTypes = ['SaveImage', 'PreviewImage', 'ShowText', 'ShowText|pysssss', 'TK_ShowText'];
-            const outputNodes = [];
-            for (const nodeId in workflow) {
-                const node = workflow[nodeId];
-                if (outputTypes.includes(node.class_type)) {
-                    outputNodes.push({ id: nodeId, type: node.class_type, inputs: node.inputs });
-                }
-            }
-            console.log("📤 Output Nodes Found:", outputNodes);
-
-            if (outputNodes.length === 0) {
-                alert("❌ Warning: No SaveImage/PreviewImage nodes found in workflow! This will cause ComfyUI to reject the prompt.");
-                console.error("No output nodes in workflow. ComfyUI requires at least one SaveImage or PreviewImage node.");
-            }
-
-            // Also log LoadImage nodes specifically
-            console.log("🖼️ LoadImage Nodes:");
-            for (const nodeId in workflow) {
-                const node = workflow[nodeId];
-                if (node.class_type === 'LoadImage') {
-                    console.log(`  Node ${nodeId}:`, JSON.stringify(node.inputs));
-                }
-            }
-
+            let workflow = this.applyUserInputsToWorkflow(rootPreset.workflow);
+            this.sanitizeLoadImageNodes(workflow, { requireImageInput: true });
 
             // --- BATCH CONFIRMATION & VALIDATION ---
             const batchToggle = document.getElementById('tk-batch-toggle');
@@ -278,94 +785,45 @@ export const ToolkitApp = {
                     alert('批量生成數量必須在 2 到 10 之間 (整數)。');
                     btn.disabled = false;
                     btn.innerHTML = '重試 (Retry)';
-                    statusContainer.classList.add('tk-hidden');
+                    this.setFormStatus(statusContainer, statusMsg, '❌ 批量生成數量必須在 2 到 10 之間 (整數)。', true);
                     return;
                 }
             }
 
-            // --- EXECUTION LOOP ---
+            // --- EXECUTION LOOP (MAIN + FOLLOWUP CHAINS) ---
             for (let i = 0; i < batchCount; i++) {
                 if (isBatch) {
-                    statusMsg.textContent = `📡 正在發送批量任務 (${i + 1}/${batchCount})...`;
+                    this.setFormStatus(statusContainer, statusMsg, `📡 正在執行批量任務 (${i + 1}/${batchCount})...`);
                 } else {
-                    statusMsg.textContent = "📡 正在發送到 ComfyUI...";
+                    this.setFormStatus(statusContainer, statusMsg, "📡 正在執行工作流...");
                 }
+                this.setProgressInfo(`執行中 (${i + 1}/${batchCount})`, `📡 正在提交主工作流...`);
 
-                // 1. Clone Workflow for this iteration
-                // For batch, we perform fresh randomization. For single, we use 'workflow' as already prepared (with user seed).
-                // However, to keep logic clean, if batch, we clone and randomize. 
-                // If single, we just use 'workflow'.
-                let currentWorkflow = workflow;
-
+                const currentWorkflow = this.cloneWorkflow(workflow);
                 if (isBatch) {
-                    currentWorkflow = JSON.parse(JSON.stringify(workflow));
-                    // Force Randomize Seeds
-                    for (const nid in currentWorkflow) {
-                        const n = currentWorkflow[nid];
-                        if (n.inputs) {
-                            if (n.inputs['seed'] !== undefined) n.inputs['seed'] = Math.floor(Math.random() * 100000000000000);
-                            if (n.inputs['noise_seed'] !== undefined) n.inputs['noise_seed'] = Math.floor(Math.random() * 100000000000000);
-                        }
-                    }
+                    this.randomizeSeedInputs(currentWorkflow);
                 }
 
-                const p = {
-                    prompt: currentWorkflow,
-                    client_id: api.clientId
-                };
-
-                const response = await api.fetchApi('/prompt', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(p)
+                await this.executePresetChain(rootPreset, currentWorkflow, presetsById, {
+                    statusContainer,
+                    statusMsg,
+                    batchIndex: i,
+                    batchCount,
+                    chainStack: []
                 });
-
-                if (response.ok) {
-                    const resData = await response.json();
-
-                    // Save to history
-                    try {
-                        await api.fetchApi('/tk/save_history', {
-                            method: 'POST',
-                            body: JSON.stringify({
-                                id: this.uuidv4(),
-                                prompt_id: resData.prompt_id,
-                                preset_name: preset.name,
-                                timestamp: Date.now(),
-                                workflow: currentWorkflow, // Save the specific one
-                                status: 'queued'
-                            })
-                        });
-                    } catch (err) { console.error("Failed to save history", err); }
-
-                    // Set current prompt ID for onExecuted listener
-                    // In batch mode, this might overwrite quickly, but it ensures at least the last one triggers the preview or loading logic.
-                    this.currentPromptId = resData.prompt_id;
-                    this.currentPresetId = preset.id;
-
-                } else {
-                    let errText = response.statusText;
-                    try {
-                        const errJson = await response.json();
-                        if (errJson && errJson.error) errText = JSON.stringify(errJson.error);
-                        else if (errJson) errText = JSON.stringify(errJson);
-                    } catch (e2) {
-                        const txt = await response.text();
-                        if (txt) errText = txt;
-                    }
-                    throw new Error(`API Error ${response.status}: ${errText}`);
-                }
-
-                // Small delay between batch submissions to ensure order and avoid overwhelm
-                if (isBatch && i < batchCount - 1) {
-                    await new Promise(r => setTimeout(r, 250));
-                }
             }
 
-            // --- SUCCESS STATE (After all submitted) ---
             statusMsg.innerHTML = isBatch
-                ? `✅ 已成功加入批量隊列 (${batchCount}張)！<br><span style="font-size:0.8em; color:var(--tk-emerald-400); cursor:pointer; text-decoration:underline;" onclick="document.querySelector('[data-tab=gallery]').click()">👉 前往「我的作品」查看進度</span>`
-                : `✅ 已成功加入隊列！<br><span style="font-size:0.8em; color:var(--tk-emerald-400); cursor:pointer; text-decoration:underline;" onclick="document.querySelector('[data-tab=gallery]').click()">👉 前往「我的作品」查看進度</span>`;
+                ? `✅ 批量與後續流程執行完成 (${batchCount}張)！<br><span class="tk-open-gallery-link" style="font-size:0.8em; color:var(--tk-emerald-400); cursor:pointer; text-decoration:underline;">👉 前往「我的作品」查看結果</span>`
+                : `✅ 工作流與後續流程執行完成！<br><span class="tk-open-gallery-link" style="font-size:0.8em; color:var(--tk-emerald-400); cursor:pointer; text-decoration:underline;">👉 前往「我的作品」查看結果</span>`;
+            const openGalleryLink = statusMsg.querySelector('.tk-open-gallery-link');
+            if (openGalleryLink) {
+                openGalleryLink.onclick = () => {
+                    const galleryTab = document.querySelector('[data-tab=gallery]');
+                    if (galleryTab) galleryTab.click();
+                };
+            }
+            this.setProgressInfo('執行完成', '✅ 已完成全部工作流流程');
 
             setTimeout(() => {
                 btn.disabled = false;
@@ -373,14 +831,12 @@ export const ToolkitApp = {
                 statusContainer.classList.add('tk-hidden');
             }, 4000);
 
-            // Force progress bar show
-            const bar = document.getElementById('tk-progress-area');
-            if (bar) bar.classList.remove('tk-hidden');
-
         } catch (e) {
             console.error(e);
-            statusMsg.className = 'tk-status-msg tk-status-error';
-            statusMsg.textContent = "❌ 發生錯誤: " + e.message;
+            const reason = e && e.message ? e.message : String(e);
+            this.executionErrorActive = true;
+            this.setFormStatus(statusContainer, statusMsg, "❌ 發生錯誤: " + reason, true);
+            this.setProgressInfo('執行失敗', `❌ ${reason}`, true);
             btn.disabled = false;
             btn.innerHTML = '重試 (Retry)';
         }
@@ -401,27 +857,30 @@ export const ToolkitApp = {
             const res = await api.fetchApi('/tk/history');
             const history = await res.json();
 
-            // Process history to get images or text
-            const items = await Promise.all(history.map(async (item) => {
-                // If we don't have an image url recorded, try to find it from Comfy API
-                // Note: Ideally we store the image path when 'executed' event fires, but for now we fetch it
-                if (!item.image_url && !item.text_content) {
+            // Process history to resolve image/text with persisted snapshot first.
+            const items = await Promise.all(history.map(async (rawItem) => {
+                const item = (rawItem && typeof rawItem === 'object') ? { ...rawItem } : {};
+                item.image_url = String(item.persisted_image_url || item.image_url || '');
+
+                if (!item.image_url && item.image_meta && item.image_meta.filename) {
+                    item.image_url = this.buildComfyViewImageUrl(item.image_meta);
+                }
+
+                if (!item.image_url && !item.text_content && item.prompt_id) {
                     try {
                         const hRes = await api.fetchApi('/history/' + item.prompt_id);
                         if (hRes.ok) {
                             const hData = await hRes.json();
                             const data = hData[item.prompt_id];
                             if (data && data.outputs) {
-                                // 1. Try to find Image
                                 for (const nodeId in data.outputs) {
                                     const out = data.outputs[nodeId];
                                     if (out.images && out.images.length > 0) {
                                         const img = out.images[0];
-                                        item.image_url = `/view?filename=${img.filename}&subfolder=${img.subfolder}&type=${img.type}`;
+                                        item.image_url = this.buildComfyViewImageUrl(img);
                                         break;
                                     }
                                 }
-                                // 2. If no image, try to find Text
                                 if (!item.image_url) {
                                     for (const nodeId in data.outputs) {
                                         const out = data.outputs[nodeId];
@@ -435,7 +894,9 @@ export const ToolkitApp = {
                                 }
                             }
                         }
-                    } catch (e) { }
+                    } catch (e) {
+                        // Ignore single-item failures and keep rendering the rest.
+                    }
                 }
                 return item;
             }));
@@ -457,21 +918,27 @@ export const ToolkitApp = {
                 card.style.position = 'relative';
 
                 const date = new Date(item.timestamp).toLocaleString();
+                const safePresetName = this.escapeHtml(item.preset_name || 'Unknown');
+                const safeDate = this.escapeHtml(date);
 
                 // Changed click handler to openImageModal or openTextModal
                 let contentHtml = '';
 
                 if (item.image_url) {
-                    contentHtml = `<img src="${item.image_url}" class="tk-gallery-img" style="cursor:pointer;" onclick="ToolkitApp.openImageModal('${item.image_url}')">`;
+                    const safeImageUrl = this.escapeAttr(item.image_url);
+                    contentHtml = `<img src="${safeImageUrl}" class="tk-gallery-img tk-gallery-preview-image" loading="lazy" style="cursor:pointer;">`;
                 } else if (item.text_content) {
                     const safeText = encodeURIComponent(item.text_content);
+                    const safeTextAttr = this.escapeAttr(safeText);
+                    const safeSnippet = this.escapeHtml(`${String(item.text_content).substring(0, 50)}...`);
                     contentHtml = `
-                        <div class="tk-gallery-img" 
+                        <div class="tk-gallery-img tk-gallery-preview-text"
+                             data-text="${safeTextAttr}"
                              style="display:flex; flex-direction:column; align-items:center; justify-content:center; color:var(--tk-zinc-400); font-size:0.8rem; background:rgba(255,255,255,0.02); cursor:pointer; padding:12px; text-align:center;"
-                             onclick="ToolkitApp.openTextModal(decodeURIComponent('${safeText}'))">
+                        >
                              <span style="font-size:2rem; margin-bottom:4px;">📝</span>
-                             <span style="overflow:hidden; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; text-overflow:ellipsis; width:100%;">${item.text_content.substring(0, 50)}...</span>
-                        </div>
+                             <span style="overflow:hidden; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; text-overflow:ellipsis; width:100%;">${safeSnippet}</span>
+                         </div>
                     `;
                 } else {
                     contentHtml = `<div class="tk-gallery-img" style="display:flex;align-items:center;justify-content:center;color:var(--tk-zinc-600);font-size:2rem;">⏳</div>`;
@@ -480,26 +947,24 @@ export const ToolkitApp = {
                 // Button Logic: "Make Same Style" for Images OR "Copy Prompt" for Text
                 let actionBtn = '';
                 if (item.image_url) {
+                    const safeHistoryId = this.escapeAttr(item.id || '');
                     actionBtn = `
                         <button class="tk-make-same-style-btn" 
+                                data-history-id="${safeHistoryId}"
                                 title="做同款 (Make Same Style)"
-                                onclick="ToolkitApp.loadHistorySettings('${item.id}')"
                                 style="position: absolute; bottom: 44px; right: 8px; width: 32px; height: 32px; border-radius: 50%; background: var(--tk-amber-500, #f59e0b); border: 2px solid #18181b; color: #000; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5); transition: transform 0.1s; z-index: 10;"
-                                onmouseover="this.style.transform='scale(1.1)'"
-                                onmouseout="this.style.transform='scale(1)'"
                         >
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
                         </button>`;
                 } else if (item.text_content) {
                     // For text, we use a Copy button
                     const safeTextForCopy = encodeURIComponent(item.text_content);
+                    const safeCopyAttr = this.escapeAttr(safeTextForCopy);
                     actionBtn = `
                         <button class="tk-copy-history-btn" 
+                                data-copy-text="${safeCopyAttr}"
                                 title="複製提示詞 (Copy Prompt)"
-                                onclick="ToolkitApp.copyText('${safeTextForCopy}', this)"
                                 style="position: absolute; bottom: 44px; right: 8px; width: 32px; height: 32px; border-radius: 50%; background: var(--tk-emerald-500, #10b981); border: 2px solid #18181b; color: #000; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5); transition: transform 0.1s; z-index: 10;"
-                                onmouseover="this.style.transform='scale(1.1)'"
-                                onmouseout="this.style.transform='scale(1)'"
                         >
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                         </button>`;
@@ -509,32 +974,45 @@ export const ToolkitApp = {
                     ${contentHtml}
                     ${actionBtn}
                     <div class="tk-gallery-meta">
-                        <span class="tk-gallery-tag">${item.preset_name || 'Unknown'}</span>
-                        <div style="color:var(--tk-zinc-500); font-size:0.65rem;">${date}</div>
+                        <span class="tk-gallery-tag">${safePresetName}</span>
+                        <div style="color:var(--tk-zinc-500); font-size:0.65rem;">${safeDate}</div>
                     </div>
                  `;
+
+                const previewImage = card.querySelector('.tk-gallery-preview-image');
+                if (previewImage && item.image_url) {
+                    previewImage.onclick = () => this.openImageModal(item.image_url);
+                }
+
+                const previewText = card.querySelector('.tk-gallery-preview-text');
+                if (previewText) {
+                    previewText.onclick = () => {
+                        const encoded = previewText.dataset.text || '';
+                        this.openTextModal(decodeURIComponent(encoded));
+                    };
+                }
+
+                const sameStyleBtn = card.querySelector('.tk-make-same-style-btn');
+                if (sameStyleBtn) {
+                    sameStyleBtn.onclick = () => this.loadHistorySettings(String(sameStyleBtn.dataset.historyId || ''));
+                    sameStyleBtn.onmouseenter = () => { sameStyleBtn.style.transform = 'scale(1.1)'; };
+                    sameStyleBtn.onmouseleave = () => { sameStyleBtn.style.transform = 'scale(1)'; };
+                }
+
+                const copyBtn = card.querySelector('.tk-copy-history-btn');
+                if (copyBtn) {
+                    copyBtn.onclick = () => this.copyText(copyBtn.dataset.copyText || '', copyBtn);
+                    copyBtn.onmouseenter = () => { copyBtn.style.transform = 'scale(1.1)'; };
+                    copyBtn.onmouseleave = () => { copyBtn.style.transform = 'scale(1)'; };
+                }
+
                 grid.appendChild(card);
             });
 
         } catch (e) {
             console.error(e);
-            container.innerHTML = `<div style="color:red;">載入失敗: ${e.message}</div>`;
+            container.innerHTML = `<div style="color:red;">載入失敗: ${this.escapeHtml(e.message)}</div>`;
         }
-    },
-
-    openImageModal(imageUrl) {
-        const modal = document.createElement('div');
-        modal.style.cssText = `
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.9); z-index: 10000;
-            display: flex; align-items: center; justify-content: center;
-            cursor: zoom-out; animation: tk-fade-in 0.2s;
-        `;
-        modal.innerHTML = `
-            <img src="${imageUrl}" style="max-width:95%; max-height:95%; object-fit:contain; box-shadow:0 0 20px rgba(0,0,0,0.5); border-radius:4px;">
-        `;
-        modal.onclick = () => modal.remove();
-        document.body.appendChild(modal);
     },
 
     openTextModal(text) {
@@ -551,16 +1029,29 @@ export const ToolkitApp = {
                     <h3 style="margin:0; font-size:1.1rem; color:var(--tk-zinc-100);">完整提示詞</h3>
                     <button class="tk-close-modal-btn" style="background:none; border:none; color:var(--tk-zinc-400); cursor:pointer;">✕</button>
                 </div>
-                <div style="padding:1.5rem; overflow-y:auto; color:var(--tk-zinc-300); white-space:pre-wrap; font-family:monospace; line-height:1.6;">${text}</div>
+                <div class="tk-text-modal-content" style="padding:1.5rem; overflow-y:auto; color:var(--tk-zinc-300); white-space:pre-wrap; font-family:monospace; line-height:1.6;"></div>
                 <div style="padding:1rem; border-top:1px solid var(--tk-border); display:flex; justify-content:flex-end;">
-                     <button class="tk-generate-btn" style="min-width:auto; padding:8px 16px;" onclick="navigator.clipboard.writeText(decodeURIComponent('${encodeURIComponent(text)}')).then(() => alert('已複製！'))">
+                     <button class="tk-generate-btn tk-text-modal-copy" style="min-width:auto; padding:8px 16px;">
                         📋 複製內容
                      </button>
                 </div>
             </div>
         `;
 
-        modal.querySelector('.tk-close-modal-btn').onclick = () => modal.remove();
+        const textContainer = modal.querySelector('.tk-text-modal-content');
+        if (textContainer) textContainer.textContent = String(text ?? '');
+
+        const closeBtn = modal.querySelector('.tk-close-modal-btn');
+        if (closeBtn) closeBtn.onclick = () => modal.remove();
+
+        const copyBtn = modal.querySelector('.tk-text-modal-copy');
+        if (copyBtn) {
+            copyBtn.onclick = async () => {
+                await navigator.clipboard.writeText(String(text ?? ''));
+                alert('已複製！');
+            };
+        }
+
         modal.onclick = (e) => {
             if (e.target === modal) modal.remove();
         };
@@ -584,7 +1075,7 @@ export const ToolkitApp = {
     // --- STATE MANAGEMENT ---
     savePresetState(presetId, partialState) {
         if (!this.stateCache[presetId]) {
-            this.stateCache[presetId] = { inputs: {}, preview: null };
+            this.stateCache[presetId] = { inputs: {}, preview: null, followups: {} };
         }
         if (partialState.inputs) {
             this.stateCache[presetId].inputs = { ...this.stateCache[presetId].inputs, ...partialState.inputs };
@@ -594,6 +1085,12 @@ export const ToolkitApp = {
         }
         if (partialState.sizeMode !== undefined) {
             this.stateCache[presetId].sizeMode = partialState.sizeMode;
+        }
+        if (partialState.followups) {
+            const current = (typeof this.stateCache[presetId].followups === 'object' && this.stateCache[presetId].followups)
+                ? this.stateCache[presetId].followups
+                : {};
+            this.stateCache[presetId].followups = { ...current, ...partialState.followups };
         }
     },
 
@@ -791,10 +1288,12 @@ export const ToolkitApp = {
             models.forEach(m => {
                 const item = document.createElement('div');
                 item.style.cssText = "display:flex; justify-content:space-between; align-items:center; background:rgba(39,39,42,0.4); padding:1rem; border-radius:8px; border:1px solid var(--tk-border);";
+                const safeModelName = this.escapeHtml(String(m.name || ''));
+                const ratioCount = Array.isArray(m.ratios) ? m.ratios.length : 0;
                 item.innerHTML = `
                     <div>
-                        <div style="font-weight:600; color:var(--tk-zinc-200);">${m.name}</div>
-                        <div style="font-size:0.75rem; color:var(--tk-zinc-500);">${m.ratios.length} ratios</div>
+                        <div style="font-weight:600; color:var(--tk-zinc-200);">${safeModelName}</div>
+                        <div style="font-size:0.75rem; color:var(--tk-zinc-500);">${ratioCount} ratios</div>
                     </div>
                     <div style="display:flex; gap:6px;">
                          <button class="tk-edit-mini" style="background:var(--tk-emerald-500); border:none; color:#000; padding:6px 12px; border-radius:6px; cursor:pointer; font-size:11px; font-weight:700;">編輯</button>
@@ -822,10 +1321,13 @@ export const ToolkitApp = {
             ratios.forEach((r, idx) => {
                 const row = document.createElement('div');
                 row.style.cssText = "display:grid; grid-template-columns: 1fr 80px 80px 40px; gap:8px; align-items:center;";
+                const safeRatioName = this.escapeAttr(String(r.name ?? ''));
+                const safeRatioW = this.escapeAttr(String(r.width ?? ''));
+                const safeRatioH = this.escapeAttr(String(r.height ?? ''));
                 row.innerHTML = `
-                    <input type="text" class="tk-input ratio-name" value="${r.name}" placeholder="Name (e.g. 1:1)">
-                    <input type="number" class="tk-input ratio-w" value="${r.width}" placeholder="W">
-                    <input type="number" class="tk-input ratio-h" value="${r.height}" placeholder="H">
+                    <input type="text" class="tk-input ratio-name" value="${safeRatioName}" placeholder="Name (e.g. 1:1)">
+                    <input type="number" class="tk-input ratio-w" value="${safeRatioW}" placeholder="W">
+                    <input type="number" class="tk-input ratio-h" value="${safeRatioH}" placeholder="H">
                     <button class="tk-del-mini" style="background:rgba(239,68,68,0.2); border:none; color:#f87171; width:32px; height:32px; border-radius:4px; cursor:pointer;">×</button>
                 `;
                 row.querySelector('.tk-del-mini').onclick = () => {
@@ -843,7 +1345,8 @@ export const ToolkitApp = {
 
             if (model) {
                 nameInput.value = model.name;
-                renderRatios(JSON.parse(JSON.stringify(model.ratios))); // Deep copy
+                const modelRatios = Array.isArray(model.ratios) ? model.ratios : [];
+                renderRatios(JSON.parse(JSON.stringify(modelRatios))); // Deep copy
             } else {
                 nameInput.value = '';
                 renderRatios([]);
@@ -877,8 +1380,21 @@ export const ToolkitApp = {
                 alert('請輸入模型名稱');
                 return;
             }
-            // Auto-generate ID from name (lowercase, spaces to underscores)
-            const id = this.editingModelId || name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+            // Auto-generate safe ID from name (lowercase, spaces to underscores)
+            const normalizeModelId = (rawName) => String(rawName || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+            let id = this.editingModelId || normalizeModelId(name);
+            if (!id) {
+                id = `model_${this.uuidv4().slice(0, 8)}`;
+            }
+            if (!this.editingModelId) {
+                const usedIds = new Set(models.map((m) => String(m.id || '')));
+                const baseId = id;
+                let idx = 2;
+                while (usedIds.has(id)) {
+                    id = `${baseId}_${idx}`;
+                    idx += 1;
+                }
+            }
 
             // Gather ratios
             const ratios = [];
@@ -911,6 +1427,7 @@ export const ToolkitApp = {
     async renderAdminPanel(container) {
         // Ensure models are loaded for the dropdown
         await this.loadModels();
+        await this.ensureSettingsLoaded();
 
         container.innerHTML = `
             <div class="tk-admin-panel animate-in fade-in duration-300">
@@ -922,6 +1439,17 @@ export const ToolkitApp = {
                             <button class="tk-tab-btn" id="tk-admin-tab-models" style="font-size:0.9rem;">模型管理</button>
                         </div>
                     </div>
+                </div>
+
+                <div class="tk-admin-section" style="margin-bottom: 1.5rem; display:flex; align-items:flex-start; justify-content:space-between; gap:1rem;">
+                    <div>
+                        <label class="tk-label" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                            <input type="checkbox" id="tk-clear-history-on-startup" ${this.settingsCache && this.settingsCache.clear_history_on_startup ? 'checked' : ''} style="accent-color: var(--tk-emerald-500); width:16px; height:16px;">
+                            <span>啟動時清空歷史紀錄</span>
+                        </label>
+                        <p style="font-size:0.75rem; color:var(--tk-zinc-500); margin-top:4px; margin-left:24px;">預設為關閉。開啟後，下次啟動 ComfyUI 會清空 Toolkit 歷史。</p>
+                    </div>
+                    <span id="tk-settings-save-state" style="font-size:0.75rem; color:var(--tk-zinc-500); white-space:nowrap;"></span>
                 </div>
 
                 <!-- VIEW: PRESETS -->
@@ -958,6 +1486,7 @@ export const ToolkitApp = {
                                     <option value="t2i">文生圖 (T2I)</option>
                                     <option value="i2i">圖生圖 (I2I)</option>
                                     <option value="edit">圖片編輯 (Edit)</option>
+                                    <option value="post_image">圖片後處理 (Post)</option>
                                     <option value="t2v">文生影片 (T2V)</option>
                                     <option value="i2v">圖生影片 (I2V)</option>
                                     <option value="v2v">影片生影片 (V2V)</option>
@@ -971,7 +1500,7 @@ export const ToolkitApp = {
                             <label class="tk-label">使用模型 (用於比例選擇)</label>
                             <select id="tk-config-model" class="tk-input">
                                 <option value="">(無) 自行輸入尺寸</option>
-                                ${this.modelsCache ? this.modelsCache.map(m => `<option value="${m.id}">${m.name}</option>`).join('') : ''}
+                                ${this.modelsCache ? this.modelsCache.map(m => `<option value="${this.escapeAttr(String(m.id || ''))}">${this.escapeHtml(String(m.name || ''))}</option>`).join('') : ''}
                             </select>
                             <p style="font-size:0.75rem; color:var(--tk-zinc-500); margin-top:4px;">選擇此工作流使用的基礎模型，以便用戶可以使用預設的比例尺寸。</p>
                         </div>
@@ -985,10 +1514,23 @@ export const ToolkitApp = {
                         </div>
 
                         <div class="tk-form-group" style="margin-bottom: 2rem;">
+                            <label class="tk-label">後續工作流 (可複選，僅限圖片後處理)</label>
+                            <div style="display:flex; gap:8px;">
+                                <div id="tk-config-next-workflows" class="tk-next-workflow-list" style="flex:1;"></div>
+                                <div style="display:flex; flex-direction:column; gap:6px;">
+                                    <button id="tk-next-workflow-up" type="button" class="tk-tab-btn" style="padding: 0.5rem 0.8rem;">↑</button>
+                                    <button id="tk-next-workflow-down" type="button" class="tk-tab-btn" style="padding: 0.5rem 0.8rem;">↓</button>
+                                </div>
+                            </div>
+                            <p style="font-size:0.75rem; color:var(--tk-zinc-500); margin-top:4px;">勾選即可啟用後續工作流；可用 ↑↓ 調整執行順序。執行時若需接圖，優先使用 LoadImageFromPath。</p>
+                            <p id="tk-image-input-hint" style="display:none; font-size:0.75rem; color:var(--tk-amber-400); margin-top:6px;"></p>
+                        </div>
+
+                        <div class="tk-form-group" style="margin-bottom: 2rem;">
                             <label class="tk-label">預覽圖片</label>
                             <div style="display:flex; gap:0.5rem;">
                                 <input type="text" id="tk-config-image" class="tk-input" placeholder="圖片連結或上傳" style="flex:1;">
-                                <button class="tk-tab-btn" onclick="document.getElementById('tk-upload-img-input').click()" style="background: var(--tk-zinc-800);">上傳檔案</button>
+                                <button id="tk-trigger-upload-img" type="button" class="tk-tab-btn" style="background: var(--tk-zinc-800);">上傳檔案</button>
                             </div>
                             <input type="file" id="tk-upload-img-input" accept="image/*" style="display:none;">
                         </div>
@@ -1036,10 +1578,43 @@ export const ToolkitApp = {
             }
         };
 
+        const clearHistoryToggle = container.querySelector('#tk-clear-history-on-startup');
+        const settingsState = container.querySelector('#tk-settings-save-state');
+        if (clearHistoryToggle) {
+            clearHistoryToggle.onchange = async (e) => {
+                const nextValue = !!e.target.checked;
+                e.target.disabled = true;
+                if (settingsState) settingsState.textContent = '儲存中...';
+                try {
+                    await this.saveToolkitSettings({ clear_history_on_startup: nextValue });
+                    if (settingsState) settingsState.textContent = '已儲存';
+                } catch (err) {
+                    e.target.checked = !nextValue;
+                    alert(`設定儲存失敗: ${err.message}`);
+                    if (settingsState) settingsState.textContent = '儲存失敗';
+                } finally {
+                    e.target.disabled = false;
+                    if (settingsState) {
+                        setTimeout(() => { settingsState.textContent = ''; }, 1500);
+                    }
+                }
+            };
+        }
+
         // Bind Actions (Presets)
         const fileInput = container.querySelector('#tk-upload-json');
         container.querySelector('#tk-trigger-upload').onclick = () => fileInput.click();
         fileInput.onchange = (e) => this.handleJsonUpload(e.target.files[0]);
+        const imageFileInput = container.querySelector('#tk-upload-img-input');
+        const imageUploadTrigger = container.querySelector('#tk-trigger-upload-img');
+        if (imageUploadTrigger && imageFileInput) {
+            imageUploadTrigger.onclick = () => imageFileInput.click();
+        }
+
+        const nextWorkflowUpBtn = container.querySelector('#tk-next-workflow-up');
+        const nextWorkflowDownBtn = container.querySelector('#tk-next-workflow-down');
+        if (nextWorkflowUpBtn) nextWorkflowUpBtn.onclick = () => this.moveSelectedNextWorkflow('up');
+        if (nextWorkflowDownBtn) nextWorkflowDownBtn.onclick = () => this.moveSelectedNextWorkflow('down');
 
         container.querySelector('#tk-save-preset').onclick = () => this.savePreset();
         container.querySelector('#tk-cancel-edit').onclick = () => {
@@ -1047,10 +1622,11 @@ export const ToolkitApp = {
             this.editingPresetId = null;
             this.currentWorkflow = null;
             fileInput.value = '';
+            this.renderNextWorkflowOptions([]);
         };
 
         // Image Upload
-        container.querySelector('#tk-upload-img-input').onchange = async (e) => {
+        imageFileInput.onchange = async (e) => {
             const file = e.target.files[0];
             if (!file) return;
             const formData = new FormData();
@@ -1065,6 +1641,170 @@ export const ToolkitApp = {
         };
 
         this.loadAdminPresetList();
+        this.renderNextWorkflowOptions([]);
+    },
+
+    getNextWorkflowRows() {
+        const container = document.getElementById('tk-config-next-workflows');
+        if (!container) return [];
+
+        return Array.from(container.querySelectorAll('.tk-next-workflow-row')).map((row) => {
+            const checkbox = row.querySelector('.tk-next-workflow-check');
+            return {
+                id: String(row.dataset.workflowId || ''),
+                name: String(row.dataset.workflowName || ''),
+                selected: !!(checkbox && checkbox.checked)
+            };
+        }).filter((row) => row.id);
+    },
+
+    updateNextWorkflowOrderBadges() {
+        const container = document.getElementById('tk-config-next-workflows');
+        if (!container) return;
+
+        let order = 1;
+        Array.from(container.querySelectorAll('.tk-next-workflow-row')).forEach((row) => {
+            const checkbox = row.querySelector('.tk-next-workflow-check');
+            const badge = row.querySelector('.tk-next-workflow-order');
+            const selected = !!(checkbox && checkbox.checked);
+            row.classList.toggle('is-selected', selected);
+            if (badge) {
+                badge.textContent = selected ? String(order) : '-';
+            }
+            if (selected) order += 1;
+        });
+    },
+
+    renderNextWorkflowOptions(selectedIds = [], excludePresetId = null, orderedIds = null) {
+        const container = document.getElementById('tk-config-next-workflows');
+        if (!container) return;
+
+        const selectedSet = new Set((selectedIds || []).map((id) => String(id)));
+        const selectedSorted = [...selectedSet];
+
+        const allPresets = Array.isArray(this.presetsCache) ? this.presetsCache : [];
+        const postProcessPresets = allPresets
+            .filter((p) => p && p.category === 'post_image')
+            .filter((p) => String(p.id) !== String(excludePresetId));
+        const byId = new Map(postProcessPresets.map((p) => [String(p.id), p]));
+
+        const options = [];
+        const seen = new Set();
+
+        if (Array.isArray(orderedIds) && orderedIds.length > 0) {
+            orderedIds.forEach((id) => {
+                const preset = byId.get(String(id));
+                if (!preset) return;
+                const presetId = String(preset.id);
+                if (seen.has(presetId)) return;
+                seen.add(presetId);
+                options.push(preset);
+            });
+        } else {
+            selectedSorted.forEach((id) => {
+                const preset = byId.get(id);
+                if (!preset) return;
+                const presetId = String(preset.id);
+                if (seen.has(presetId)) return;
+                seen.add(presetId);
+                options.push(preset);
+            });
+        }
+
+        postProcessPresets.forEach((preset) => {
+            const presetId = String(preset.id);
+            if (seen.has(presetId)) return;
+            seen.add(presetId);
+            options.push(preset);
+        });
+
+        container.innerHTML = '';
+        if (options.length === 0) {
+            container.innerHTML = '<div class="tk-next-workflow-empty">目前沒有可用的圖片後處理工作流。</div>';
+            return;
+        }
+
+        options.forEach((preset) => {
+            const workflowId = String(preset.id);
+            const row = document.createElement('label');
+            row.className = 'tk-next-workflow-row';
+            row.dataset.workflowId = workflowId;
+            row.dataset.workflowName = String(preset.name || '');
+
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.className = 'tk-next-workflow-check';
+            checkbox.checked = selectedSet.has(workflowId);
+            checkbox.addEventListener('change', () => this.updateNextWorkflowOrderBadges());
+
+            const orderBadge = document.createElement('span');
+            orderBadge.className = 'tk-next-workflow-order';
+            orderBadge.textContent = '-';
+
+            const nameText = document.createElement('span');
+            nameText.className = 'tk-next-workflow-name';
+            nameText.textContent = String(preset.name || '');
+
+            row.appendChild(checkbox);
+            row.appendChild(orderBadge);
+            row.appendChild(nameText);
+            container.appendChild(row);
+        });
+
+        this.updateNextWorkflowOrderBadges();
+    },
+
+    moveSelectedNextWorkflow(direction) {
+        const rows = this.getNextWorkflowRows();
+        if (rows.length === 0) return;
+
+        const options = rows.map((row) => ({
+            value: row.id,
+            text: row.name,
+            selected: row.selected
+        }));
+
+        if (direction === 'up') {
+            for (let i = 1; i < options.length; i++) {
+                if (options[i].selected && !options[i - 1].selected) {
+                    const tmp = options[i - 1];
+                    options[i - 1] = options[i];
+                    options[i] = tmp;
+                }
+            }
+        } else {
+            for (let i = options.length - 2; i >= 0; i--) {
+                if (options[i].selected && !options[i + 1].selected) {
+                    const tmp = options[i + 1];
+                    options[i + 1] = options[i];
+                    options[i] = tmp;
+                }
+            }
+        }
+
+        const orderedIds = options.map((opt) => String(opt.value));
+        const selectedAfterMove = options.filter((opt) => opt.selected).map((opt) => String(opt.value));
+        this.renderNextWorkflowOptions(selectedAfterMove, this.editingPresetId, orderedIds);
+    },
+
+    getOrderedSelectedNextWorkflowIds() {
+        return this.getNextWorkflowRows()
+            .filter((row) => row.selected)
+            .map((row) => String(row.id));
+    },
+
+    updateImageInputHint(workflow) {
+        const hint = document.getElementById('tk-image-input-hint');
+        if (!hint) return;
+        hint.style.display = 'none';
+        hint.textContent = '';
+
+        const targets = findImageInputTargets(workflow);
+        if (targets.length > 1) {
+            const chosen = targets[0];
+            hint.style.display = 'block';
+            hint.textContent = `提示：偵測到 ${targets.length} 個可接圖節點；鏈式執行會自動選擇節點 ID 最小的 ${chosen.nodeId} (${chosen.nodeClass}/${chosen.inputName})。`;
+        }
     },
 
     async loadAdminPresetList() {
@@ -1085,6 +1825,7 @@ export const ToolkitApp = {
                 't2i': '🖼️ 文生圖 (T2I)',
                 'i2i': '🎨 圖生圖 (I2I)',
                 'edit': '🔨 圖片編輯 (Edit)',
+                'post_image': '🧩 圖片後處理',
                 't2v': '🎥 文生影片 (T2V)',
                 'i2v': '🎞️ 圖生影片 (I2V)',
                 'v2v': '📹 影片生影片 (V2V)',
@@ -1114,13 +1855,16 @@ export const ToolkitApp = {
                 groupPresets.forEach(p => {
                     const item = document.createElement('div');
                     item.style.cssText = "display:flex; align-items:center; gap:0.75rem; background:rgba(39,39,42,0.4); padding:0.75rem; border-radius:12px; border:1px solid var(--tk-border); transition: all 0.2s; position: relative; overflow: hidden; margin-bottom: 8px;";
+                    const safePreviewImageUrl = this.escapeAttr(p.previewImageUrl || '');
+                    const safeName = this.escapeHtml(p.name || '');
+                    const safeCategory = this.escapeHtml(p.category || '');
                     item.innerHTML = `
                         <div style="width:40px; height:40px; border-radius:8px; background:var(--tk-zinc-900); overflow:hidden; border:1px solid var(--tk-border); display:flex; align-items:center; justify-content:center;">
-                            ${p.previewImageUrl ? `<img src="${p.previewImageUrl}" style="width:100%; height:100%; object-fit:cover; opacity: 0.8;" onerror="this.remove(); this.parentElement.innerText='🍌';">` : '<span style="font-size:1.2rem;">🍌</span>'}
+                            ${p.previewImageUrl ? `<img src="${safePreviewImageUrl}" class="tk-admin-preset-thumb" style="width:100%; height:100%; object-fit:cover; opacity: 0.8;">` : '<span style="font-size:1.2rem;">🍌</span>'}
                         </div>
                         <div style="flex:1; min-width:0;">
-                             <div style="font-size:0.875rem; font-weight:600; color:var(--tk-zinc-200); text-overflow:ellipsis; overflow:hidden; white-space:nowrap;">${p.name}</div>
-                             <div style="font-size:0.65rem; color:var(--tk-zinc-500); text-transform:uppercase;">${p.category}</div>
+                             <div style="font-size:0.875rem; font-weight:600; color:var(--tk-zinc-200); text-overflow:ellipsis; overflow:hidden; white-space:nowrap;">${safeName}</div>
+                             <div style="font-size:0.65rem; color:var(--tk-zinc-500); text-transform:uppercase;">${safeCategory}</div>
                         </div>
                         <div style="display:flex; gap:6px;">
                              <button class="tk-edit-mini" style="background:var(--tk-emerald-500); border:none; color:#000; padding:6px 12px; border-radius:8px; cursor:pointer; font-size:11px; font-weight:700; transition:all 0.2s;">🔏 編輯</button>
@@ -1132,6 +1876,14 @@ export const ToolkitApp = {
                     item.querySelector('.tk-edit-mini').onmouseout = (e) => e.target.style.transform = 'scale(1)';
                     item.querySelector('.tk-del-mini').onmouseover = (e) => e.target.style.background = 'rgba(239,68,68,0.3)';
                     item.querySelector('.tk-del-mini').onmouseout = (e) => e.target.style.background = 'rgba(239,68,68,0.2)';
+                    const thumb = item.querySelector('.tk-admin-preset-thumb');
+                    if (thumb) {
+                        thumb.onerror = () => {
+                            const holder = thumb.parentElement;
+                            thumb.remove();
+                            if (holder) holder.innerText = '🍌';
+                        };
+                    }
 
                     item.querySelector('.tk-edit-mini').onclick = () => this.loadPresetForEditing(p);
                     item.querySelector('.tk-del-mini').onclick = async () => {
@@ -1145,8 +1897,11 @@ export const ToolkitApp = {
                     listContainer.appendChild(item);
                 });
             }
+
+            const currentSelected = this.getOrderedSelectedNextWorkflowIds();
+            this.renderNextWorkflowOptions(currentSelected, this.editingPresetId);
         } catch (e) {
-            listContainer.innerHTML = `<div style="color:red; font-size:0.75rem;">載入失敗: ${e.message}</div>`;
+            listContainer.innerHTML = `<div style="color:red; font-size:0.75rem;">載入失敗: ${this.escapeHtml(e.message)}</div>`;
         }
     },
 
@@ -1155,16 +1910,22 @@ export const ToolkitApp = {
         this.currentWorkflow = preset.workflow;
 
         this.parseAndShowConfig(preset.workflow);
+        const nextWorkflowIds = Array.isArray(preset.nextWorkflows) ? preset.nextWorkflows.map((id) => String(id)) : [];
+        this.renderNextWorkflowOptions(nextWorkflowIds, preset.id);
+        this.updateImageInputHint(preset.workflow);
 
         document.getElementById('tk-config-name').value = preset.name;
         document.getElementById('tk-config-category').value = preset.category;
         document.getElementById('tk-config-model').value = preset.modelUsage || '';
         document.getElementById('tk-config-allow-batch').checked = !!preset.allowBatch;
-        document.getElementById('tk-config-image').value = preset.previewImageUrl;
+        document.getElementById('tk-config-image').value = preset.previewImageUrl || '';
         document.getElementById('tk-config-title').textContent = "編輯預設項目";
 
-        preset.parameters.forEach(p => {
-            const checkbox = document.querySelector(`.tk-param-visible[data-node="${p.nodeId}"][data-key="${p.inputName}"]`);
+        (Array.isArray(preset.parameters) ? preset.parameters : []).forEach(p => {
+            const checkbox = this.findElementByDataset('.tk-param-visible', {
+                node: p.nodeId,
+                key: p.inputName,
+            });
             if (checkbox) {
                 checkbox.checked = p.visible;
                 const row = checkbox.closest('.tk-node-param-admin');
@@ -1188,9 +1949,12 @@ export const ToolkitApp = {
                 this.currentWorkflow = json;
                 this.parseAndShowConfig(json);
                 document.getElementById('tk-config-name').value = '';
+                document.getElementById('tk-config-category').value = 't2i';
                 document.getElementById('tk-config-model').value = '';
                 document.getElementById('tk-config-allow-batch').checked = false;
                 document.getElementById('tk-config-image').value = '';
+                this.renderNextWorkflowOptions([], null);
+                this.updateImageInputHint(json);
             } catch (err) { alert("無效的 JSON 檔案"); }
         };
         reader.readAsText(file);
@@ -1208,15 +1972,25 @@ export const ToolkitApp = {
             const nodeDiv = document.createElement('div');
             nodeDiv.style.cssText = "background:rgba(9,9,11,0.2); border:1px solid var(--tk-border); border-radius:16px; overflow:hidden;";
 
-            nodeDiv.innerHTML = `
-                <div style="background:rgba(63,63,70,0.2); padding:0.5rem 1rem; font-size:10px; font-weight:800; color:var(--tk-zinc-500); display:flex; justify-content:space-between; text-transform:uppercase; letter-spacing:0.05em;">
-                    <span>NODE ID: ${nodeId}</span>
-                    <span style="color:var(--tk-emerald-500); opacity:0.6;">${nodeData.class_type}</span>
-                </div>
-                <div class="tk-node-params-body" style="padding:1rem; display:flex; flex-direction:column; gap:0.75rem;"></div>
-            `;
+            const header = document.createElement('div');
+            header.style.cssText = "background:rgba(63,63,70,0.2); padding:0.5rem 1rem; font-size:10px; font-weight:800; color:var(--tk-zinc-500); display:flex; justify-content:space-between; text-transform:uppercase; letter-spacing:0.05em;";
 
-            const paramsBody = nodeDiv.querySelector('.tk-node-params-body');
+            const nodeIdLabel = document.createElement('span');
+            nodeIdLabel.textContent = `NODE ID: ${String(nodeId)}`;
+
+            const classTypeLabel = document.createElement('span');
+            classTypeLabel.style.cssText = "color:var(--tk-emerald-500); opacity:0.6;";
+            classTypeLabel.textContent = String(nodeData.class_type || '');
+
+            header.appendChild(nodeIdLabel);
+            header.appendChild(classTypeLabel);
+            nodeDiv.appendChild(header);
+
+            const paramsBody = document.createElement('div');
+            paramsBody.className = 'tk-node-params-body';
+            paramsBody.style.cssText = "padding:1rem; display:flex; flex-direction:column; gap:0.75rem;";
+            nodeDiv.appendChild(paramsBody);
+
             let hasInputs = false;
 
             for (const [key, val] of Object.entries(nodeData.inputs)) {
@@ -1227,17 +2001,46 @@ export const ToolkitApp = {
                 paramDiv.className = 'tk-node-param-admin';
                 paramDiv.style.cssText = "display:flex; align-items:center; gap:1rem;";
 
-                paramDiv.innerHTML = `
-                    <input type="checkbox" class="tk-param-visible" data-node="${nodeId}" data-key="${key}" style="accent-color: var(--tk-emerald-500);">
-                    <span style="font-size:0.875rem; color:var(--tk-zinc-300); width:120px; overflow:hidden; text-overflow:ellipsis;">${key}</span>
-                    <input type="text" class="tk-input tk-param-name-admin" placeholder="顯示名稱" value="${key}" style="padding:0.4rem 0.8rem; flex:1; font-size:0.75rem;">
-                    <input type="text" class="tk-input tk-param-default-admin" placeholder="默認值" value="${val}" style="padding:0.4rem 0.8rem; width:120px; font-size:0.75rem;">
-                `;
+                const safeNodeId = String(nodeId);
+                const safeKey = String(key);
+                const safeDefaultValue = String(val ?? '');
+
+                const visibleToggle = document.createElement('input');
+                visibleToggle.type = 'checkbox';
+                visibleToggle.className = 'tk-param-visible';
+                visibleToggle.dataset.node = safeNodeId;
+                visibleToggle.dataset.key = safeKey;
+                visibleToggle.style.cssText = "accent-color: var(--tk-emerald-500);";
+
+                const keyLabel = document.createElement('span');
+                keyLabel.style.cssText = "font-size:0.875rem; color:var(--tk-zinc-300); width:120px; overflow:hidden; text-overflow:ellipsis;";
+                keyLabel.textContent = safeKey;
+
+                const nameInput = document.createElement('input');
+                nameInput.type = 'text';
+                nameInput.className = 'tk-input tk-param-name-admin';
+                nameInput.placeholder = '顯示名稱';
+                nameInput.value = safeKey;
+                nameInput.style.cssText = "padding:0.4rem 0.8rem; flex:1; font-size:0.75rem;";
+
+                const defaultInput = document.createElement('input');
+                defaultInput.type = 'text';
+                defaultInput.className = 'tk-input tk-param-default-admin';
+                defaultInput.placeholder = '默認值';
+                defaultInput.value = safeDefaultValue;
+                defaultInput.style.cssText = "padding:0.4rem 0.8rem; width:120px; font-size:0.75rem;";
+
+                paramDiv.appendChild(visibleToggle);
+                paramDiv.appendChild(keyLabel);
+                paramDiv.appendChild(nameInput);
+                paramDiv.appendChild(defaultInput);
                 paramsBody.appendChild(paramDiv);
             }
 
             if (hasInputs) nodeList.appendChild(nodeDiv);
         }
+
+        this.updateImageInputHint(workflow);
     },
 
     async savePreset() {
@@ -1246,9 +2049,18 @@ export const ToolkitApp = {
         const modelUsage = document.getElementById('tk-config-model').value;
         const allowBatch = document.getElementById('tk-config-allow-batch').checked;
         const image = document.getElementById('tk-config-image').value;
+        const nextWorkflows = this.getOrderedSelectedNextWorkflowIds();
 
         if (!name) { alert("請輸入名稱"); return; }
         if (!this.currentWorkflow) { alert("未載入工作流"); return; }
+
+        await this.ensurePresetsLoaded();
+        const allPresets = Array.isArray(this.presetsCache) ? this.presetsCache : [];
+        const postProcessPresetIds = new Set(
+            allPresets
+                .filter((p) => p && p.category === 'post_image')
+                .map((p) => String(p.id))
+        );
 
         const parameters = [];
         document.querySelectorAll('.tk-param-visible:checked').forEach(checkbox => {
@@ -1277,13 +2089,42 @@ export const ToolkitApp = {
             });
         });
 
+        const presetId = this.editingPresetId || this.uuidv4();
+        if (nextWorkflows.includes(String(presetId))) {
+            alert("儲存失敗：後續工作流不可包含自己。");
+            return;
+        }
+
+        for (const nextId of nextWorkflows) {
+            if (!postProcessPresetIds.has(String(nextId))) {
+                alert(`儲存失敗：後續工作流 ID ${nextId} 不是「圖片後處理」分類。`);
+                return;
+            }
+        }
+
+        const nextGraph = {};
+        allPresets.forEach((p) => {
+            if (!p || !p.id) return;
+            nextGraph[String(p.id)] = Array.isArray(p.nextWorkflows) ? p.nextWorkflows.map((id) => String(id)) : [];
+        });
+        nextGraph[String(presetId)] = nextWorkflows.map((id) => String(id));
+
+        const cyclePath = findCyclePath(nextGraph);
+        if (cyclePath) {
+            const idToName = new Map(allPresets.map((p) => [String(p.id), p.name]));
+            idToName.set(String(presetId), name);
+            const cycleNames = cyclePath.map((id) => idToName.get(String(id)) || String(id));
+            alert(`儲存失敗：偵測到後續工作流循環\n${cycleNames.join(' -> ')}`);
+            return;
+        }
+
         const presetData = {
-            id: this.editingPresetId || this.uuidv4(),
+            id: presetId,
             name,
-            category,
             category,
             modelUsage,
             allowBatch,
+            nextWorkflows,
             previewImageUrl: image,
             workflow: this.currentWorkflow,
             parameters
@@ -1296,6 +2137,8 @@ export const ToolkitApp = {
             document.getElementById('tk-config-area').classList.add('tk-hidden');
             this.editingPresetId = null;
             this.currentWorkflow = null;
+            this.renderNextWorkflowOptions([]);
+            this.updateImageInputHint({});
             this.loadAdminPresetList();
         } else alert("保存失敗");
     },
@@ -1315,8 +2158,9 @@ export const ToolkitApp = {
 
             if (!item) throw new Error("找不到該歷史記錄");
 
-            // 3. Find corresponding preset
-            const preset = this.presetsCache.find(p => p.name === item.preset_name);
+            // 3. Find corresponding preset (prefer stable ID)
+            const preset = this.presetsCache.find(p => String(p.id) === String(item.preset_id))
+                || this.presetsCache.find(p => p.name === item.preset_name);
             if (!preset) throw new Error(`找不到原預設項目 "${item.preset_name}" (可能已被刪除)`);
 
             // 4. Fetch actual workflow from ComfyUI history to get the real inputs used
@@ -1344,53 +2188,55 @@ export const ToolkitApp = {
                 console.warn("Failed to fetch ComfyUI history, falling back to stored workflow", err);
             }
 
-            // 5. Switch Tab and Render
-            ToolkitUI.switchTab(preset.category);
+            const sourceWorkflowObject = (sourceWorkflow && typeof sourceWorkflow === 'object') ? sourceWorkflow : {};
 
-            // Wait for DOM
-            setTimeout(() => {
-                const mainPanel = document.getElementById('tk-main-panel');
-                ToolkitUI.renderUserForm(preset, mainPanel);
+            // 5. Switch Tab and Render (await to avoid race with async form rendering)
+            const sidebarList = document.getElementById('tk-sidebar-list');
+            const mainPanel = document.getElementById('tk-main-panel');
+            ToolkitUI.switchTab(preset.category, { skipLoad: true });
 
-                // Highlight in sidebar
-                const sidebarList = document.getElementById('tk-sidebar-list');
-                if (sidebarList) {
-                    const cards = sidebarList.querySelectorAll('.tk-preset-card');
-                    cards.forEach(c => {
-                        if (c.querySelector('.tk-preset-name').textContent === preset.name) {
-                            c.classList.add('active');
-                            c.scrollIntoView({ block: 'center' });
-                        } else {
-                            c.classList.remove('active');
-                        }
-                    });
-                }
+            if (sidebarList && mainPanel) {
+                await this.loadPresets(preset.category, sidebarList, mainPanel);
+            }
+            if (!mainPanel) throw new Error("找不到主面板，無法套用同款參數。");
 
-                // 6. Populate Values from Source Workflow
-                let matchCount = 0;
-                // sourceWorkflow is { nodeId: { inputs: { ... } } }
+            await ToolkitUI.renderUserForm(preset, mainPanel);
 
-                // Debug logging
-                console.log("Restoring from workflow:", sourceWorkflow);
-
-                preset.parameters.forEach(param => {
-                    // sourceWorkflow uses string keys for node IDs
-                    const node = sourceWorkflow[param.nodeId] || sourceWorkflow[parseInt(param.nodeId)];
-
-                    if (node && node.inputs) {
-                        const val = node.inputs[param.inputName];
-                        if (val !== undefined) {
-                            const inputElem = document.querySelector(`.tk-form-input[data-node="${param.nodeId}"][data-input="${param.inputName}"]`);
-                            if (inputElem) {
-                                inputElem.value = val;
-                                matchCount++;
-                            }
-                        }
+            // Highlight in sidebar
+            if (sidebarList) {
+                const cards = sidebarList.querySelectorAll('.tk-preset-card');
+                cards.forEach((card) => {
+                    const presetName = card.querySelector('.tk-preset-name')?.textContent;
+                    if (presetName === preset.name) {
+                        card.classList.add('active');
+                        card.scrollIntoView({ block: 'center' });
+                    } else {
+                        card.classList.remove('active');
                     }
                 });
+            }
 
-                this.showToast(`已套用同款參數 (${matchCount})`, 'success');
-            }, 200); // Increased timeout to 200ms just to be safe
+            // 6. Populate Values from Source Workflow
+            let matchCount = 0;
+            console.log("Restoring from workflow:", sourceWorkflowObject);
+
+            (Array.isArray(preset.parameters) ? preset.parameters : []).forEach((param) => {
+                const node = sourceWorkflowObject[String(param.nodeId)];
+                if (!node || !node.inputs) return;
+
+                const val = node.inputs[param.inputName];
+                if (val === undefined) return;
+
+                const inputElem = this.findElementByDataset('.tk-form-input', {
+                    node: param.nodeId,
+                    input: param.inputName,
+                });
+                if (!inputElem) return;
+                this.setFormInputValue(inputElem, val);
+                matchCount++;
+            });
+
+            this.showToast(`已套用同款參數 (${matchCount})`, 'success');
 
         } catch (e) {
             console.error(e);
@@ -1428,7 +2274,10 @@ export const ToolkitApp = {
             console.log("📤 Custom Upload Success:", customFilename);
 
             // Determine Node Type
-            const inputEl = document.querySelector(`.tk-form-input[data-node="${nodeId}"][data-input="${inputName}"]`);
+            const inputEl = this.findElementByDataset('.tk-form-input', {
+                node: nodeId,
+                input: inputName,
+            });
             const nodeClass = inputEl ? inputEl.dataset.nodeClass : '';
             const isLoadImageFromPath = nodeClass === 'LoadImageFromPath';
 
@@ -1443,8 +2292,7 @@ export const ToolkitApp = {
 
                 // Update Input directly
                 if (inputEl) {
-                    inputEl.value = absPath;
-                    inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+                    this.setFormInputValue(inputEl, absPath);
                 }
 
                 // Update Preview (Standard API won't see this file, so use our custom route)
@@ -1470,10 +2318,12 @@ export const ToolkitApp = {
                     const finalFilename = standardData.name;
                     console.log("✅ Standard Upload Success:", finalFilename);
 
-                    const hiddenInput = document.querySelector(`.tk-form-input[data-node="${nodeId}"][data-input="${inputName}"]`);
+                    const hiddenInput = this.findElementByDataset('.tk-form-input', {
+                        node: nodeId,
+                        input: inputName,
+                    });
                     if (hiddenInput) {
-                        hiddenInput.value = finalFilename;
-                        hiddenInput.dispatchEvent(new Event('input', { bubbles: true }));
+                        this.setFormInputValue(hiddenInput, finalFilename);
                     }
 
                     if (previewContainer) {
@@ -1491,7 +2341,7 @@ export const ToolkitApp = {
 
         } catch (e) {
             console.error(e);
-            if (previewContainer) previewContainer.innerHTML = `<div style="color:#ef4444; font-size:0.8rem; padding:10px;">上傳失敗 (Upload Failed): ${e.message}</div>`;
+            if (previewContainer) previewContainer.innerHTML = `<div style="color:#ef4444; font-size:0.8rem; padding:10px;">上傳失敗 (Upload Failed): ${this.escapeHtml(e.message)}</div>`;
             alert("Upload failed: " + e.message);
         }
     },
