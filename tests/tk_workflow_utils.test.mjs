@@ -4,6 +4,7 @@ import {
   findImageInputTargets,
   pickPrimaryImageInputTarget,
   extractFirstOutputImage,
+  extractFirstOutputVideo,
   findCyclePath,
 } from '../web/tk_workflow_utils.js';
 
@@ -65,6 +66,61 @@ test('findCyclePath returns cycle path for cyclic graph', () => {
   });
 
   assert.deepEqual(cycle, ['A', 'B', 'C', 'A']);
+});
+
+test('extractFirstOutputImage does not treat native ComfyUI video output as an image', () => {
+  const history = {
+    outputs: {
+      '12': { images: [{ filename: 'clip.mp4', subfolder: 'video', type: 'output' }], animated: [true] },
+    },
+  };
+  assert.equal(extractFirstOutputImage(history), null);
+});
+
+test('extractFirstOutputImage supports GIF output from VideoHelperSuite', () => {
+  const history = {
+    outputs: {
+      '12': { gifs: [{ filename: 'clip.gif', subfolder: '', type: 'output', format: 'image/gif' }] },
+    },
+  };
+  assert.deepEqual(extractFirstOutputImage(history), {
+    filename: 'clip.gif', subfolder: '', type: 'output', sourceNodeId: '12',
+  });
+});
+
+test('extractFirstOutputVideo recognizes VideoHelperSuite MP4 output', () => {
+  const history = { outputs: {
+    '12': { gifs: [{
+      filename: 'stable_4v4a_00004-audio.mp4', subfolder: 'MiniMaxH3', type: 'output',
+      format: 'video/h264-mp4', frame_rate: 24, workflow: 'stable_4v4a_00004.png',
+    }] },
+  } };
+  assert.deepEqual(extractFirstOutputVideo(history), {
+    filename: 'stable_4v4a_00004-audio.mp4', subfolder: 'MiniMaxH3', type: 'output', sourceNodeId: '12',
+  });
+  assert.equal(extractFirstOutputImage(history), null);
+});
+
+test('extractFirstOutputVideo recognizes native video without confusing thumbnails', () => {
+  const history = { outputs: {
+    '1': { images: [{ filename: 'thumbnail.png' }] },
+    '12': { images: [null, { filename: 'clip.WEBM' }], animated: [true] },
+  } };
+  assert.equal(extractFirstOutputVideo(history).filename, 'clip.WEBM');
+  assert.equal(extractFirstOutputImage(history).filename, 'thumbnail.png');
+});
+
+test('extractFirstOutputVideo ignores GIF images and malformed output entries', () => {
+  for (const history of [null, {}, { outputs: { '1': null, '2': { gifs: [null, {}, { filename: 'clip.gif', format: 'image/gif' }] } } }]) {
+    assert.equal(extractFirstOutputVideo(history), null);
+  }
+});
+
+test('extractFirstOutputVideo supports explicit video arrays and MIME format', () => {
+  const history = { outputs: { '4': { videos: [{ filename: 'clip', format: 'video/webm', type: 'temp' }] } } };
+  assert.deepEqual(extractFirstOutputVideo(history), {
+    filename: 'clip', subfolder: '', type: 'temp', sourceNodeId: '4',
+  });
 });
 
 test('findCyclePath returns null for acyclic graph', () => {

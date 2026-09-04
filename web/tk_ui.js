@@ -905,6 +905,19 @@ export const ToolkitUI = {
             if (img) {
                 img.onclick = () => ToolkitApp.openImageModal(content);
             }
+        } else if (type === 'video') {
+            const safeContent = this.escapeAttr(content);
+            previewSection.innerHTML = `
+                <video src="${safeContent}" class="tk-preview-result-video" controls playsinline preload="metadata" style="width:100%; height:100%; object-fit:contain;" aria-label="生成影片"></video>
+                <div class="tk-preview-badge" style="pointer-events:none;">
+                    <span class="tk-badge-text">🎥 生成影片</span>
+                </div>
+                <a href="${safeContent}" download style="position:absolute; top:1rem; right:1rem; color:var(--tk-emerald-400); background:#18181b; padding:6px 12px; border-radius:6px;">⬇ 下載影片</a>
+            `;
+            const video = previewSection.querySelector('.tk-preview-result-video');
+            video.onerror = () => {
+                previewSection.querySelector('.tk-badge-text').textContent = '影片無法播放，請下載後開啟';
+            };
         } else if (type === 'text') {
             // Text Preview
             previewSection.innerHTML = `

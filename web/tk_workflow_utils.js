@@ -65,25 +65,40 @@ export function pickPrimaryImageInputTarget(workflow) {
     return targets.length > 0 ? targets[0] : null;
 }
 
-export function extractFirstOutputImage(historyEntry) {
+export function isVideoOutput(file) {
+    return !!file && (/^video\//i.test(String(file.format || "")) || /\.(mp4|webm|m4v|mov|mkv|avi|ogv)$/i.test(String(file.filename || "")));
+}
+
+function extractFirstOutputFile(historyEntry, video) {
     if (!historyEntry || !historyEntry.outputs || typeof historyEntry.outputs !== "object") return null;
 
     const outputNodeIds = Object.keys(historyEntry.outputs).sort(compareNodeIds);
     for (const nodeId of outputNodeIds) {
         const nodeOutput = historyEntry.outputs[nodeId];
-        if (!nodeOutput || !Array.isArray(nodeOutput.images) || nodeOutput.images.length === 0) continue;
-        const image = nodeOutput.images[0];
-        if (!image || !image.filename) continue;
-
-        return {
-            filename: image.filename,
-            subfolder: image.subfolder || "",
-            type: image.type || "output",
-            sourceNodeId: String(nodeId),
-        };
+        if (!nodeOutput || typeof nodeOutput !== "object") continue;
+        for (const key of video ? ["videos", "gifs", "images"] : ["images", "gifs"]) {
+            if (!Array.isArray(nodeOutput[key])) continue;
+            for (const file of nodeOutput[key]) {
+                if (!file || !file.filename || isVideoOutput(file) !== video) continue;
+                return {
+                    filename: file.filename,
+                    subfolder: file.subfolder || "",
+                    type: file.type || "output",
+                    sourceNodeId: String(nodeId),
+                };
+            }
+        }
     }
 
     return null;
+}
+
+export function extractFirstOutputImage(historyEntry) {
+    return extractFirstOutputFile(historyEntry, false);
+}
+
+export function extractFirstOutputVideo(historyEntry) {
+    return extractFirstOutputFile(historyEntry, true);
 }
 
 export function findCyclePath(graph) {

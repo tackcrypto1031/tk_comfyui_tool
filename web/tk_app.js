@@ -1,6 +1,6 @@
 import { api } from "../../scripts/api.js";
 import { ToolkitUI } from "./tk_ui.js";
-import { extractFirstOutputImage, findCyclePath, findImageInputTargets, pickPrimaryImageInputTarget } from "./tk_workflow_utils.js";
+import { extractFirstOutputImage, extractFirstOutputVideo, isVideoOutput, findCyclePath, findImageInputTargets, pickPrimaryImageInputTarget } from "./tk_workflow_utils.js";
 
 export const ToolkitApp = {
     // --- CACHE ---
@@ -57,7 +57,7 @@ export const ToolkitApp = {
             this.renderGallery(gallery.parentElement); // Re-render
         }
 
-        // Handle Preview Update (Image or Text)
+        // Handle preview updates from completed history.
         if (this.currentPromptId && e.detail.prompt_id === this.currentPromptId) {
             try {
                 const hRes = await api.fetchApi('/history/' + this.currentPromptId);
@@ -65,31 +65,7 @@ export const ToolkitApp = {
                     const hData = await hRes.json();
                     const data = hData[this.currentPromptId];
                     if (data && data.outputs) {
-                        let foundImage = null;
-                        let foundText = null;
-
-                        for (const nodeId in data.outputs) {
-                            const out = data.outputs[nodeId];
-                            // Check for Images
-                            if (out.images && out.images.length > 0) {
-                                const img = out.images[0];
-                                foundImage = this.buildComfyViewImageUrl(img);
-                                break; // Prioritize image
-                            }
-                            // Check for Text (common keys: text, string, value)
-                            if (!foundImage && (out.text || out.string || out.value)) {
-                                foundText = out.text || out.string || out.value;
-                                if (Array.isArray(foundText)) foundText = foundText.join('\n');
-                            }
-                        }
-
-                        if (foundImage) {
-                            ToolkitUI.updatePreview('image', foundImage);
-                            this.savePresetState(this.currentPresetId, { preview: { type: 'image', content: foundImage } });
-                        } else if (foundText) {
-                            ToolkitUI.updatePreview('text', foundText);
-                            this.savePresetState(this.currentPresetId, { preview: { type: 'text', content: foundText } });
-                        }
+                        this.updateResultPreview(this.extractOutputResult(data), this.currentPresetId);
                     }
                 }
             } catch (err) {
@@ -337,12 +313,12 @@ export const ToolkitApp = {
     },
 
     async persistHistoryResult(promptId, presetInfo, historyEntry) {
-        const outputImage = extractFirstOutputImage(historyEntry);
-        const textContent = outputImage ? '' : this.extractFirstOutputText(historyEntry);
+        const result = this.extractOutputResult(historyEntry);
+        const { outputImage, outputVideo, videoUrl, textContent } = result;
 
         let comfyImageUrl = '';
         let persistedImageUrl = '';
-        if (outputImage) {
+        if (outputImage && !outputVideo) {
             comfyImageUrl = this.buildComfyViewImageUrl(outputImage);
             try {
                 persistedImageUrl = await this.cacheOutputImageForHistory(outputImage);
@@ -363,6 +339,8 @@ export const ToolkitApp = {
                     image_meta: outputImage || null,
                     image_url: finalImageUrl || '',
                     persisted_image_url: persistedImageUrl || '',
+                    video_meta: outputVideo,
+                    video_url: videoUrl,
                     text_content: textContent || ''
                 })
             });
@@ -371,10 +349,29 @@ export const ToolkitApp = {
         }
 
         return {
-            outputImage,
-            textContent,
+            ...result,
             imageUrl: finalImageUrl || ''
         };
+    },
+
+    extractOutputResult(historyEntry) {
+        const outputVideo = extractFirstOutputVideo(historyEntry);
+        const outputImage = extractFirstOutputImage(historyEntry);
+        return {
+            outputVideo,
+            outputImage,
+            videoUrl: this.buildComfyViewImageUrl(outputVideo),
+            imageUrl: this.buildComfyViewImageUrl(outputImage),
+            textContent: outputVideo || outputImage ? '' : this.extractFirstOutputText(historyEntry),
+        };
+    },
+
+    updateResultPreview(result, presetId) {
+        const type = result.videoUrl ? 'video' : result.imageUrl ? 'image' : 'text';
+        const content = result.videoUrl || result.imageUrl || result.textContent;
+        if (!content) return;
+        ToolkitUI.updatePreview(type, content);
+        this.savePresetState(presetId, { preview: { type, content } });
     },
 
     setFormInputValue(inputEl, nextValue) {
@@ -652,6 +649,9 @@ export const ToolkitApp = {
         const promptId = await this.submitPrompt(workflow, { id: preset.id, name: preset.name });
         const historyEntry = await this.waitForPromptResult(promptId);
         const resultSnapshot = await this.persistHistoryResult(promptId, { id: preset.id, name: preset.name }, historyEntry);
+        this.updateResultPreview(resultSnapshot, preset.id);
+        const gallery = document.getElementById('tk-gallery-container');
+        if (gallery) await this.renderGallery(gallery.parentElement);
         const nextIds = Array.isArray(preset.nextWorkflows) ? preset.nextWorkflows.map((id) => String(id)) : [];
         const outputImage = resultSnapshot.outputImage || extractFirstOutputImage(historyEntry);
         if (nextIds.length > 0 && !outputImage) {
@@ -857,40 +857,37 @@ export const ToolkitApp = {
             const res = await api.fetchApi('/tk/history');
             const history = await res.json();
 
-            // Process history to resolve image/text with persisted snapshot first.
+            // Prefer saved media metadata, then recover older entries from ComfyUI history.
             const items = await Promise.all(history.map(async (rawItem) => {
                 const item = (rawItem && typeof rawItem === 'object') ? { ...rawItem } : {};
                 item.image_url = String(item.persisted_image_url || item.image_url || '');
+                item.video_url = String(item.video_url || this.buildComfyViewImageUrl(item.video_meta));
+
+                if (!item.video_url && isVideoOutput(item.image_meta)) {
+                    item.video_meta = item.image_meta;
+                    item.video_url = this.buildComfyViewImageUrl(item.video_meta);
+                    item.image_url = '';
+                    item.image_meta = null;
+                }
 
                 if (!item.image_url && item.image_meta && item.image_meta.filename) {
                     item.image_url = this.buildComfyViewImageUrl(item.image_meta);
                 }
 
-                if (!item.image_url && !item.text_content && item.prompt_id) {
+                if (!item.video_url && !item.image_url && !item.text_content && item.prompt_id) {
                     try {
                         const hRes = await api.fetchApi('/history/' + item.prompt_id);
                         if (hRes.ok) {
                             const hData = await hRes.json();
                             const data = hData[item.prompt_id];
                             if (data && data.outputs) {
-                                for (const nodeId in data.outputs) {
-                                    const out = data.outputs[nodeId];
-                                    if (out.images && out.images.length > 0) {
-                                        const img = out.images[0];
-                                        item.image_url = this.buildComfyViewImageUrl(img);
-                                        break;
-                                    }
-                                }
-                                if (!item.image_url) {
-                                    for (const nodeId in data.outputs) {
-                                        const out = data.outputs[nodeId];
-                                        if (out.text || out.string || out.value) {
-                                            let txt = out.text || out.string || out.value;
-                                            if (Array.isArray(txt)) txt = txt.join('\n');
-                                            item.text_content = txt;
-                                            break;
-                                        }
-                                    }
+                                const result = this.extractOutputResult(data);
+                                item.video_url = result.videoUrl;
+                                item.video_meta = result.outputVideo;
+                                item.image_url = result.imageUrl;
+                                item.text_content = result.textContent;
+                                if (result.outputVideo) {
+                                    await this.persistHistoryResult(item.prompt_id, { id: item.preset_id, name: item.preset_name }, data);
                                 }
                             }
                         }
@@ -921,10 +918,15 @@ export const ToolkitApp = {
                 const safePresetName = this.escapeHtml(item.preset_name || 'Unknown');
                 const safeDate = this.escapeHtml(date);
 
-                // Changed click handler to openImageModal or openTextModal
                 let contentHtml = '';
 
-                if (item.image_url) {
+                if (item.video_url) {
+                    const safeVideoUrl = this.escapeAttr(item.video_url);
+                    contentHtml = `
+                        <video src="${safeVideoUrl}" class="tk-gallery-img tk-gallery-preview-video" controls playsinline preload="metadata" style="object-fit:contain;" aria-label="${safePresetName}"></video>
+                        <a href="${safeVideoUrl}" download class="tk-video-download" style="display:block; padding:6px 8px; color:var(--tk-emerald-400); font-size:0.75rem;">⬇ 下載影片</a>
+                    `;
+                } else if (item.image_url) {
                     const safeImageUrl = this.escapeAttr(item.image_url);
                     contentHtml = `<img src="${safeImageUrl}" class="tk-gallery-img tk-gallery-preview-image" loading="lazy" style="cursor:pointer;">`;
                 } else if (item.text_content) {
@@ -941,18 +943,19 @@ export const ToolkitApp = {
                          </div>
                     `;
                 } else {
-                    contentHtml = `<div class="tk-gallery-img" style="display:flex;align-items:center;justify-content:center;color:var(--tk-zinc-600);font-size:2rem;">⏳</div>`;
+                    const placeholder = item.status === 'completed' ? '沒有可預覽的輸出' : '⏳';
+                    contentHtml = `<div class="tk-gallery-img" style="display:flex;align-items:center;justify-content:center;color:var(--tk-zinc-600);">${placeholder}</div>`;
                 }
 
-                // Button Logic: "Make Same Style" for Images OR "Copy Prompt" for Text
+                // Reuse media settings, or copy text output.
                 let actionBtn = '';
-                if (item.image_url) {
+                if (item.video_url || item.image_url) {
                     const safeHistoryId = this.escapeAttr(item.id || '');
                     actionBtn = `
                         <button class="tk-make-same-style-btn" 
                                 data-history-id="${safeHistoryId}"
                                 title="做同款 (Make Same Style)"
-                                style="position: absolute; bottom: 44px; right: 8px; width: 32px; height: 32px; border-radius: 50%; background: var(--tk-amber-500, #f59e0b); border: 2px solid #18181b; color: #000; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5); transition: transform 0.1s; z-index: 10;"
+                                style="position: absolute; ${item.video_url ? 'top: 8px;' : 'bottom: 44px;'} right: 8px; width: 32px; height: 32px; border-radius: 50%; background: var(--tk-amber-500, #f59e0b); border: 2px solid #18181b; color: #000; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5); transition: transform 0.1s; z-index: 10;"
                         >
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
                         </button>`;
@@ -978,6 +981,14 @@ export const ToolkitApp = {
                         <div style="color:var(--tk-zinc-500); font-size:0.65rem;">${safeDate}</div>
                     </div>
                  `;
+
+                const previewVideo = card.querySelector('.tk-gallery-preview-video');
+                if (previewVideo) {
+                    previewVideo.onerror = () => {
+                        const download = card.querySelector('.tk-video-download');
+                        download.textContent = '影片無法播放，請下載後開啟';
+                    };
+                }
 
                 const previewImage = card.querySelector('.tk-gallery-preview-image');
                 if (previewImage && item.image_url) {
