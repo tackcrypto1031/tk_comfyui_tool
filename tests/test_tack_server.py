@@ -133,6 +133,19 @@ class TackServerTests(unittest.TestCase):
             saved_path = os.path.join(tmpdir, "web", "assets", filename)
             self.assertTrue(os.path.exists(saved_path))
 
+    def test_save_image_url_uses_installation_folder(self):
+        folders = {
+            "tk_comfyui_tool": "extensions/tk_comfyui_tool/assets/preview.png",
+            "tk_comfyui_tooldesign": "extensions/tk_comfyui_tooldesign/assets/preview.png",
+            "Toolkit copy": "extensions/Toolkit%20copy/assets/preview.png",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for folder, expected_url in folders.items():
+                with self.subTest(folder=folder):
+                    server = TackServer(base_dir=os.path.join(tmpdir, folder))
+                    result = server.save_image(b"preview", "preview.png")
+                    self.assertEqual(result, {"status": "success", "url": expected_url})
+
     def test_upload_public_filename_validation(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             server = TackServer(base_dir=tmpdir)

@@ -2,6 +2,7 @@ import os
 import json
 import uuid
 import re
+from urllib.parse import quote
 
 class TackServer:
     ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
@@ -253,7 +254,8 @@ class TackServer:
             with open(file_path, "wb") as f:
                 f.write(image_data)
                 
-            return {"status": "success", "url": f"extensions/tk_comfyui_tooldesign/assets/{safe_name}"}
+            extension_name = quote(os.path.basename(self.base_dir), safe="")
+            return {"status": "success", "url": f"extensions/{extension_name}/assets/{safe_name}"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
 

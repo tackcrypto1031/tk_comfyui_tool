@@ -93,11 +93,10 @@ ComfyUI Toolkit is an "Application Layer Framework" designed to bridge the gap b
     ```
 2.  Clone the repository:
     ```bash
-    git clone https://github.com/tackcrypto1031/tk_comfyui_tool.git tk_comfyui_tooldesign
+    git clone https://github.com/tackcrypto1031/tk_comfyui_tool.git
     ```
-    > [!IMPORTANT]
-    > The folder name must be exactly `tk_comfyui_tooldesign` for styles and assets to load correctly.
-3.  Restart ComfyUI.
+    Styles and uploaded preview images use the installation folder automatically. No folder rename is needed; existing `tk_comfyui_tooldesign` installations also work.
+3.  Restart ComfyUI, then refresh the browser (`Ctrl+F5`). The **🍌 Toolkit** button appears on the right side of the screen.
 
 ---
 
@@ -105,7 +104,7 @@ ComfyUI Toolkit is an "Application Layer Framework" designed to bridge the gap b
 
 ### 1. For Admins (Workflow Designers)
 1.  **Prepare Workflow**: In ComfyUI, enable "Dev mode" and save your workflow as **API Format** (`workflow_api.json`).
-2.  **Open Toolkit**: Click the **"🍌 Toolkit"** button on the right sidebar.
+2.  **Open Toolkit**: Click the floating **🍌** button on the right side of the screen.
 3.  **Create Preset**:
     - Go to the **Admin** tab.
     - Upload your `workflow_api.json`.

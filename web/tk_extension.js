@@ -13,7 +13,7 @@ app.registerExtension({
         const link = document.createElement("link");
         link.rel = "stylesheet";
         link.type = "text/css";
-        link.href = "extensions/tk_comfyui_tooldesign/tk_style.css";
+        link.href = new URL("./tk_style.css", import.meta.url).href;
         document.head.appendChild(link);
 
         // Create Floating Button

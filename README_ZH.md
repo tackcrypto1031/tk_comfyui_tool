@@ -93,11 +93,10 @@ ComfyUI Toolkit 是一款「應用層封裝框架」，旨在縮短工作流開�
     ```
 2.  複製此儲存庫：
     ```bash
-    git clone https://github.com/tackcrypto1031/tk_comfyui_tool.git tk_comfyui_tooldesign
+    git clone https://github.com/tackcrypto1031/tk_comfyui_tool.git
     ```
-    > [!IMPORTANT]
-    > 資料夾名稱必須準確為 `tk_comfyui_tooldesign`，否則樣式與資產將無法正確載入。
-3.  重啟 ComfyUI。
+    樣式與上傳的預覽圖會自動使用實際安裝資料夾，不需要改名；原有的 `tk_comfyui_tooldesign` 安裝方式也能正常使用。
+3.  重啟 ComfyUI，再於瀏覽器按 `Ctrl+F5` 重新整理，即可看到畫面右側的 **🍌 Toolkit** 按鈕。
 
 ---
 
@@ -105,7 +104,7 @@ ComfyUI Toolkit 是一款「應用層封裝框架」，旨在縮短工作流開�
 
 ### 1. 針對管理員 (工作流設計者)
 1.  **準備工作流**：在 ComfyUI 中開啟「開發者模式 (Dev mode)」，並將工作流儲存為 **API 格式** (`workflow_api.json`)。
-2.  **開啟 Toolkit**：點擊右側邊欄的 **"🍌 Toolkit"** 按鈕。
+2.  **開啟 Toolkit**：點擊畫面右側的 **🍌** 浮動按鈕。
 3.  **建立預設 (Preset)**：
     - 切換至 **Admin** 標籤頁。
     - 上傳您的 `workflow_api.json`。
