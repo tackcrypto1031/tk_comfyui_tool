@@ -5,6 +5,15 @@ const CLASS_PRIORITY = {
 
 const INPUT_KEY_PRIORITY = ["image", "image_path", "path", "file_path", "filename"];
 
+export function resolvePresetPreviewUrl(previewUrl, extensionUrl) {
+    const value = String(previewUrl ?? "").trim();
+    const localAsset = value.match(/^\/?extensions\/tk_comfyui_tool(?:design)?\/assets\/(.+)$/);
+    if (!localAsset) return value;
+
+    const resolved = new URL(`./assets/${localAsset[1]}`, extensionUrl);
+    return `${resolved.pathname}${resolved.search}${resolved.hash}`;
+}
+
 function isNumericNodeId(value) {
     return /^\d+$/.test(String(value));
 }

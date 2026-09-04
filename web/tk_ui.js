@@ -1,4 +1,5 @@
 import { ToolkitApp } from "./tk_app.js";
+import { previewCropStyle } from "./tk_preview_crop.js";
 
 export const ToolkitUI = {
     isOpen: false,
@@ -267,7 +268,7 @@ export const ToolkitUI = {
                     // Banana Fallback Logic
                     let imgHtml = '';
                     if (p.previewImageUrl) {
-                        imgHtml = `<img src="${safePreviewImageUrl}" class="tk-preset-thumb" loading="lazy">`;
+                        imgHtml = `<div class="tk-preset-thumb-frame"><img src="${safePreviewImageUrl}" class="tk-preset-thumb" loading="lazy" style="${previewCropStyle(p.previewCrop)}"></div>`;
                     } else {
                         imgHtml = `<div class="tk-preset-thumb" style="display:flex;align-items:center;justify-content:center;font-size:1.5rem;background:#18181b;">🍌</div>`;
                     }
@@ -600,9 +601,9 @@ export const ToolkitUI = {
 
         container.innerHTML = `
             <div class="tk-preset-content">
-                <div class="tk-preview-section">
+                <div class="tk-preview-section tk-preset-preview">
                     ${preset.previewImageUrl ?
-                `<img src="${this.escapeAttr(preset.previewImageUrl)}" class="tk-preview-img" loading="lazy">`
+                `<img src="${this.escapeAttr(preset.previewImageUrl)}" class="tk-preview-img" loading="lazy" style="${previewCropStyle(preset.previewCrop)}">`
                 : `<div class="tk-preview-img" style="display:flex;align-items:center;justify-content:center;font-size:5rem;background:#18181b;color:var(--tk-zinc-700);">🍌</div>`
             }
                     <div class="tk-preview-badge">
@@ -892,6 +893,7 @@ export const ToolkitUI = {
     updatePreview(type, content) {
         const previewSection = document.querySelector('.tk-preview-section');
         if (!previewSection) return;
+        previewSection.classList.remove('tk-preset-preview');
 
         if (type === 'image') {
             const safeContent = this.escapeAttr(content);

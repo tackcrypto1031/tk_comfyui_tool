@@ -7,6 +7,20 @@ from tack_server import TackServer
 
 
 class TackServerTests(unittest.TestCase):
+    def test_preset_preview_crop_survives_save_and_reload(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            server = TackServer(base_dir=tmpdir)
+            preset = {
+                "id": "crop-example", "name": "Video", "category": "i2v",
+                "previewImageUrl": "/extensions/tk_comfyui_tool/assets/cover.png",
+                "previewCrop": {"x": 35, "y": 20, "zoom": 1.5},
+                "workflow": {"12": {"class_type": "VHS_VideoCombine"}},
+            }
+            self.assertEqual(server.save_preset(preset)["status"], "success")
+            saved = TackServer(base_dir=tmpdir).get_presets()[0]
+            self.assertEqual(saved["previewCrop"], preset["previewCrop"])
+            self.assertEqual(saved["workflow"], preset["workflow"])
+
     def test_history_is_preserved_by_default(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config_dir = os.path.join(tmpdir, "config")

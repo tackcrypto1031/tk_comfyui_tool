@@ -226,6 +226,23 @@
     border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
+.tk-preset-thumb-frame {
+    width: 48px;
+    height: 48px;
+    flex-shrink: 0;
+    overflow: hidden;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.tk-preset-thumb-frame .tk-preset-thumb {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    border-radius: 0;
+}
+
 .tk-preset-info {
     flex: 1;
     min-width: 0;
@@ -274,6 +291,137 @@
     overflow: hidden;
     margin-bottom: 2rem;
     box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+}
+
+.tk-preview-section.tk-preset-preview,
+.tk-crop-frame {
+    aspect-ratio: 32 / 9;
+}
+
+.tk-crop-editor {
+    margin-top: 1rem;
+    padding: 1rem;
+    border: 1px solid var(--tk-border);
+    border-radius: 12px;
+    background: var(--tk-zinc-950);
+}
+
+.tk-crop-editor[hidden] {
+    display: none;
+}
+
+.tk-crop-heading,
+.tk-crop-controls {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.tk-crop-heading {
+    color: var(--tk-zinc-200);
+    font-size: 0.875rem;
+    font-weight: 600;
+}
+
+.tk-crop-reset {
+    padding: 0.35rem 0.75rem;
+    font-size: 0.75rem;
+}
+
+.tk-crop-hint,
+.tk-crop-status {
+    font-size: 0.75rem;
+    color: var(--tk-zinc-400);
+    margin: 0.5rem 0 0.75rem;
+    line-height: 1.6;
+}
+
+.tk-crop-status:empty {
+    display: none;
+}
+
+.tk-crop-frame {
+    position: relative;
+    width: 100%;
+    overflow: hidden;
+    border-radius: 8px;
+    border: 1px solid var(--tk-zinc-700);
+    background: #09090b;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+}
+
+.tk-crop-frame:focus-visible {
+    outline: 2px solid var(--tk-emerald-400);
+    outline-offset: 3px;
+}
+
+.tk-crop-frame.is-dragging {
+    cursor: grabbing;
+}
+
+.tk-crop-image,
+.tk-crop-thumb img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.tk-crop-image {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+.tk-crop-grid {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+        linear-gradient(to right, transparent 33.2%, #ffffff30 33.2%, #ffffff30 33.4%, transparent 33.4%, transparent 66.5%, #ffffff30 66.5%, #ffffff30 66.7%, transparent 66.7%),
+        linear-gradient(to bottom, transparent 33.2%, #ffffff30 33.2%, #ffffff30 33.4%, transparent 33.4%, transparent 66.5%, #ffffff30 66.5%, #ffffff30 66.7%, transparent 66.7%);
+}
+
+.tk-crop-controls {
+    margin-top: 0.75rem;
+}
+
+.tk-crop-zoom-control {
+    flex: 1;
+    min-width: 0;
+}
+
+.tk-crop-zoom-control label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    color: var(--tk-zinc-300);
+}
+
+.tk-crop-zoom-control input {
+    width: 100%;
+    margin: 0.6rem 0;
+    accent-color: var(--tk-emerald-500);
+}
+
+.tk-crop-thumb-group {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.75rem;
+    color: var(--tk-zinc-400);
+}
+
+.tk-crop-thumb {
+    width: 48px;
+    height: 48px;
+    flex-shrink: 0;
+    overflow: hidden;
+    border-radius: 8px;
+    background: #09090b;
 }
 
 .tk-preview-img {

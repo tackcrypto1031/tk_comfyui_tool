@@ -5,8 +5,32 @@ import {
   pickPrimaryImageInputTarget,
   extractFirstOutputImage,
   extractFirstOutputVideo,
+  resolvePresetPreviewUrl,
   findCyclePath,
 } from '../web/tk_workflow_utils.js';
+
+test('preset preview URLs follow the active extension directory and preserve encoded filenames', () => {
+  for (const folder of ['tk_comfyui_tool', 'tk_comfyui_tooldesign']) {
+    assert.equal(resolvePresetPreviewUrl(
+      `extensions/${folder}/assets/cover%20image.png?v=2`,
+      'http://localhost:8188/comfy/extensions/custom-toolkit/tk_app.js',
+    ), '/comfy/extensions/custom-toolkit/assets/cover%20image.png?v=2');
+  }
+  assert.equal(resolvePresetPreviewUrl('/extensions/tk_comfyui_tooldesign/assets/cover.png',
+    'http://localhost:8188/extensions/tk_comfyui_tool/tk_app.js'), '/extensions/tk_comfyui_tool/assets/cover.png');
+});
+
+test('preset preview URL repair leaves external URLs and other local resources unchanged', () => {
+  const extensionUrl = 'http://localhost:8188/extensions/tk_comfyui_tool/tk_app.js';
+  for (const url of [
+    '', 'https://example.com/cover.png', '/view?filename=cover.png&type=input',
+    'https://example.com/extensions/tk_comfyui_tooldesign/assets/cover.png',
+    '/extensions/another-node/assets/cover.png', 'data:image/png;base64,abc',
+  ]) {
+    assert.equal(resolvePresetPreviewUrl(url, extensionUrl), url);
+  }
+  assert.equal(resolvePresetPreviewUrl(null, extensionUrl), '');
+});
 
 test('findImageInputTargets prefers LoadImageFromPath and smallest node id', () => {
   const workflow = {

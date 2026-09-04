@@ -1,6 +1,7 @@
 import { api } from "../../scripts/api.js";
 import { ToolkitUI } from "./tk_ui.js";
-import { extractFirstOutputImage, extractFirstOutputVideo, isVideoOutput, findCyclePath, findImageInputTargets, pickPrimaryImageInputTarget } from "./tk_workflow_utils.js";
+import { PreviewCropEditor, previewCropStyle } from "./tk_preview_crop.js";
+import { extractFirstOutputImage, extractFirstOutputVideo, isVideoOutput, findCyclePath, findImageInputTargets, pickPrimaryImageInputTarget, resolvePresetPreviewUrl } from "./tk_workflow_utils.js";
 
 export const ToolkitApp = {
     // --- CACHE ---
@@ -384,7 +385,10 @@ export const ToolkitApp = {
     async ensurePresetsLoaded() {
         if (!this.presetsCache) {
             const response = await api.fetchApi('/tk/presets');
-            this.presetsCache = await response.json();
+            this.presetsCache = (await response.json()).map(preset => ({
+                ...preset,
+                previewImageUrl: resolvePresetPreviewUrl(preset.previewImageUrl, import.meta.url),
+            }));
         }
     },
 
@@ -717,10 +721,7 @@ export const ToolkitApp = {
 
     async loadPresets(category, sidebarList, mainPanel) {
         try {
-            if (!this.presetsCache) {
-                const response = await api.fetchApi('/tk/presets');
-                this.presetsCache = await response.json();
-            }
+            await this.ensurePresetsLoaded();
 
             // Define Category Mapping
             const catMap = {
@@ -1544,6 +1545,7 @@ export const ToolkitApp = {
                                 <button id="tk-trigger-upload-img" type="button" class="tk-tab-btn" style="background: var(--tk-zinc-800);">上傳檔案</button>
                             </div>
                             <input type="file" id="tk-upload-img-input" accept="image/*" style="display:none;">
+                            <div id="tk-preview-crop-editor"></div>
                         </div>
 
                         <h4 class="tk-sidebar-label" style="margin-top: 2rem;">節點與參數配置</h4>
@@ -1621,6 +1623,12 @@ export const ToolkitApp = {
         if (imageUploadTrigger && imageFileInput) {
             imageUploadTrigger.onclick = () => imageFileInput.click();
         }
+        this.previewCropEditor = new PreviewCropEditor(container.querySelector('#tk-preview-crop-editor'));
+        const previewImageInput = container.querySelector('#tk-config-image');
+        previewImageInput.onchange = () => {
+            previewImageInput.value = resolvePresetPreviewUrl(previewImageInput.value, import.meta.url);
+            this.previewCropEditor.setImage(previewImageInput.value);
+        };
 
         const nextWorkflowUpBtn = container.querySelector('#tk-next-workflow-up');
         const nextWorkflowDownBtn = container.querySelector('#tk-next-workflow-down');
@@ -1633,6 +1641,7 @@ export const ToolkitApp = {
             this.editingPresetId = null;
             this.currentWorkflow = null;
             fileInput.value = '';
+            this.previewCropEditor.setImage('');
             this.renderNextWorkflowOptions([]);
         };
 
@@ -1646,7 +1655,8 @@ export const ToolkitApp = {
                 const res = await api.fetchApi('/tk/upload_image', { method: 'POST', body: formData });
                 const data = await res.json();
                 if (data.status === 'success') {
-                    document.getElementById('tk-config-image').value = data.url;
+                    document.getElementById('tk-config-image').value = resolvePresetPreviewUrl(data.url, import.meta.url);
+                    this.previewCropEditor.setImage(document.getElementById('tk-config-image').value);
                 } else alert('上傳失敗: ' + data.message);
             } catch (err) { alert('上傳錯誤: ' + err.message); }
         };
@@ -1823,10 +1833,7 @@ export const ToolkitApp = {
         if (!listContainer) return;
 
         try {
-            if (!this.presetsCache) {
-                const response = await api.fetchApi('/tk/presets');
-                this.presetsCache = await response.json();
-            }
+            await this.ensurePresetsLoaded();
             const presets = this.presetsCache;
 
             listContainer.innerHTML = '';
@@ -1871,7 +1878,7 @@ export const ToolkitApp = {
                     const safeCategory = this.escapeHtml(p.category || '');
                     item.innerHTML = `
                         <div style="width:40px; height:40px; border-radius:8px; background:var(--tk-zinc-900); overflow:hidden; border:1px solid var(--tk-border); display:flex; align-items:center; justify-content:center;">
-                            ${p.previewImageUrl ? `<img src="${safePreviewImageUrl}" class="tk-admin-preset-thumb" style="width:100%; height:100%; object-fit:cover; opacity: 0.8;">` : '<span style="font-size:1.2rem;">🍌</span>'}
+                            ${p.previewImageUrl ? `<img src="${safePreviewImageUrl}" class="tk-admin-preset-thumb" style="width:100%; height:100%; object-fit:cover; opacity: 0.8; ${previewCropStyle(p.previewCrop)}">` : '<span style="font-size:1.2rem;">🍌</span>'}
                         </div>
                         <div style="flex:1; min-width:0;">
                              <div style="font-size:0.875rem; font-weight:600; color:var(--tk-zinc-200); text-overflow:ellipsis; overflow:hidden; white-space:nowrap;">${safeName}</div>
@@ -1930,6 +1937,7 @@ export const ToolkitApp = {
         document.getElementById('tk-config-model').value = preset.modelUsage || '';
         document.getElementById('tk-config-allow-batch').checked = !!preset.allowBatch;
         document.getElementById('tk-config-image').value = preset.previewImageUrl || '';
+        this.previewCropEditor.setImage(preset.previewImageUrl || '', preset.previewCrop);
         document.getElementById('tk-config-title').textContent = "編輯預設項目";
 
         (Array.isArray(preset.parameters) ? preset.parameters : []).forEach(p => {
@@ -1964,6 +1972,7 @@ export const ToolkitApp = {
                 document.getElementById('tk-config-model').value = '';
                 document.getElementById('tk-config-allow-batch').checked = false;
                 document.getElementById('tk-config-image').value = '';
+                this.previewCropEditor.setImage('');
                 this.renderNextWorkflowOptions([], null);
                 this.updateImageInputHint(json);
             } catch (err) { alert("無效的 JSON 檔案"); }
@@ -2059,7 +2068,7 @@ export const ToolkitApp = {
         const category = document.getElementById('tk-config-category').value;
         const modelUsage = document.getElementById('tk-config-model').value;
         const allowBatch = document.getElementById('tk-config-allow-batch').checked;
-        const image = document.getElementById('tk-config-image').value;
+        const image = resolvePresetPreviewUrl(document.getElementById('tk-config-image').value, import.meta.url);
         const nextWorkflows = this.getOrderedSelectedNextWorkflowIds();
 
         if (!name) { alert("請輸入名稱"); return; }
@@ -2137,6 +2146,7 @@ export const ToolkitApp = {
             allowBatch,
             nextWorkflows,
             previewImageUrl: image,
+            previewCrop: image ? this.previewCropEditor.getValue() : null,
             workflow: this.currentWorkflow,
             parameters
         };
@@ -2157,10 +2167,7 @@ export const ToolkitApp = {
     async loadHistorySettings(historyId) {
         try {
             // 1. Ensure presets are loaded
-            if (!this.presetsCache) {
-                const response = await api.fetchApi('/tk/presets');
-                this.presetsCache = await response.json();
-            }
+            await this.ensurePresetsLoaded();
 
             // 2. Fetch history item details
             const hRes = await api.fetchApi('/tk/history');
