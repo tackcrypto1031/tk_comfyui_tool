@@ -154,3 +154,12 @@ export function findCyclePath(graph) {
 
     return null;
 }
+// ComfyUI comfy_extras/nodes_resolution.py: ResolutionSelector.aspect_ratio.
+export function getResolutionRatioOptions(nodeClass, inputName) {
+    if (nodeClass !== 'ResolutionSelector' || inputName !== 'aspect_ratio') return null;
+    return [
+        '1:1 (Square)', '2:3 (Portrait Photo)', '3:2 (Photo)',
+        '3:4 (Portrait Standard)', '4:3 (Standard)',
+        '9:16 (Portrait Widescreen)', '16:9 (Widescreen)', '21:9 (Ultrawide)',
+    ];
+}

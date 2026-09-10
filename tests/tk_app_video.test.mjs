@@ -44,8 +44,32 @@ async function loadToolkitApp(presets = []) {
     throw new Error(`Unexpected import: ${specifier}`);
   });
   await appModule.evaluate();
-  return { app: appModule.namespace.ToolkitApp, savedHistory, previews, presetLists };
+  return { app: appModule.namespace.ToolkitApp, savedHistory, previews, presetLists, document: context.document, utils: utilsModule.namespace };
 }
+
+test('all official resolution ratios update the API input without changing size settings or the original workflow', async () => {
+  const { app, document, utils } = await loadToolkitApp();
+  const preset = { workflow: {
+    '16': { class_type: 'ResolutionSelector', inputs: { aspect_ratio: '9:16 (Portrait Widescreen)', megapixels: 0.7, multiple: 32 } },
+    '17': { class_type: 'EmptyImage', inputs: { width: ['16', 0], height: ['16', 1] } },
+  } };
+  const [nodeId, node] = Object.entries(preset.workflow).find(([, n]) => n.class_type === 'ResolutionSelector');
+  const original = JSON.stringify(preset.workflow);
+  const options = utils.getResolutionRatioOptions(node.class_type, 'aspect_ratio');
+  assert.equal(options.length, 8);
+  assert.equal(utils.getResolutionRatioOptions('PrimitiveString', 'aspect_ratio'), null);
+  assert.equal(utils.getResolutionRatioOptions(node.class_type, 'megapixels'), null);
+  for (const value of options) {
+    document.querySelectorAll = selector => selector === '.tk-form-input' ? [{
+      value, dataset: { node: nodeId, input: 'aspect_ratio', type: 'string' },
+    }] : [];
+    const workflow = app.applyUserInputsToWorkflow(preset.workflow);
+    assert.equal(workflow[nodeId].inputs.aspect_ratio, value);
+    assert.equal(workflow[nodeId].inputs.megapixels, node.inputs.megapixels);
+    assert.equal(workflow[nodeId].inputs.multiple, node.inputs.multiple);
+    assert.equal(JSON.stringify(preset.workflow), original);
+  }
+});
 
 test('completed videos persist a playable URL without using the image upload endpoint', async () => {
   const { app, savedHistory } = await loadToolkitApp();

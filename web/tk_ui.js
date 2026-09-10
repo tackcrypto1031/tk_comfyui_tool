@@ -1,5 +1,6 @@
 import { ToolkitApp } from "./tk_app.js";
 import { previewCropStyle } from "./tk_preview_crop.js";
+import { getResolutionRatioOptions } from "./tk_workflow_utils.js";
 
 export const ToolkitUI = {
     isOpen: false,
@@ -326,6 +327,14 @@ export const ToolkitUI = {
         const sizeMode = (savedState && savedState.sizeMode) ? savedState.sizeMode : 'ratio'; // 'ratio' or 'custom'
 
         const visibleParams = (Array.isArray(preset.parameters) ? preset.parameters : []).filter(p => p.visible);
+        for (const [nodeId, node] of Object.entries(preset.workflow || {})) {
+            if (node.class_type !== 'ResolutionSelector' || typeof node.inputs?.aspect_ratio !== 'string') continue;
+            if (visibleParams.some(p => String(p.nodeId) === nodeId && p.inputName === 'aspect_ratio')) continue;
+            visibleParams.push({
+                nodeId, inputName: 'aspect_ratio', nodeClass: node.class_type,
+                displayName: '尺寸比例', defaultValue: node.inputs.aspect_ratio,
+            });
+        }
 
         // --- SIZE SELECTION LOGIC ---
         let widthParam = null;
@@ -366,6 +375,22 @@ export const ToolkitUI = {
             const safeValueText = this.escapeHtml(String(currentValueRaw ?? ''));
 
             const isLoadImage = p.nodeClass === 'LoadImage' || p.nodeClass === 'LoadImageFromPath';
+            const ratioOptions = getResolutionRatioOptions(preset.workflow?.[nodeIdRaw]?.class_type || nodeClassRaw, inputNameRaw);
+            if (ratioOptions) {
+                const options = ratioOptions.includes(String(currentValueRaw))
+                    ? ratioOptions : [String(currentValueRaw), ...ratioOptions];
+                return `
+                    <div class="tk-form-group">
+                        <label class="tk-label">${safeDisplayName}</label>
+                        <select class="tk-input tk-form-input tk-state-input"
+                            data-node="${safeNodeIdAttr}" data-input="${safeInputNameAttr}"
+                            data-preset-id="${safePresetIdAttr}" data-state-key="${this.escapeAttr(stateKeyRaw)}"
+                            data-state-event="change" data-type="string">
+                            ${options.map(value => `<option value="${this.escapeAttr(value)}" ${value === String(currentValueRaw) ? 'selected' : ''}>${this.escapeHtml(value)}</option>`).join('')}
+                        </select>
+                    </div>
+                `;
+            }
             const isLongText = isLongTextParam(p);
             const isSeed = p.inputName.toLowerCase() === 'seed' ||
                 p.inputName.toLowerCase() === 'noise_seed' ||

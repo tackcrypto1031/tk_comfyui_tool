@@ -1,5 +1,6 @@
 import { api } from "../../scripts/api.js";
 import { ToolkitUI } from "./tk_ui.js";
+import { getResolutionRatioOptions } from "./tk_workflow_utils.js";
 import { PreviewCropEditor, previewCropStyle } from "./tk_preview_crop.js";
 import { extractFirstOutputImage, extractFirstOutputVideo, isVideoOutput, findCyclePath, findImageInputTargets, pickPrimaryImageInputTarget, resolvePresetPreviewUrl } from "./tk_workflow_utils.js";
 
@@ -2043,8 +2044,19 @@ export const ToolkitApp = {
                 nameInput.value = safeKey;
                 nameInput.style.cssText = "padding:0.4rem 0.8rem; flex:1; font-size:0.75rem;";
 
-                const defaultInput = document.createElement('input');
-                defaultInput.type = 'text';
+                const ratioOptions = getResolutionRatioOptions(nodeData.class_type, key);
+                const defaultInput = document.createElement(ratioOptions ? 'select' : 'input');
+                if (ratioOptions) {
+                    const options = ratioOptions.includes(safeDefaultValue) ? ratioOptions : [safeDefaultValue, ...ratioOptions];
+                    options.forEach(value => {
+                        const option = document.createElement('option');
+                        option.value = value;
+                        option.textContent = value;
+                        defaultInput.appendChild(option);
+                    });
+                } else {
+                    defaultInput.type = 'text';
+                }
                 defaultInput.className = 'tk-input tk-param-default-admin';
                 defaultInput.placeholder = '默認值';
                 defaultInput.value = safeDefaultValue;
